@@ -37,30 +37,64 @@ def fye_to_month(fye: str | None) -> int | None:
 
 COMPANY_DDL = """
 CREATE OR REPLACE TABLE company AS
+WITH ranked_subs AS (
+    SELECT
+        CAST(cik AS BIGINT) AS cik,
+        name,
+        sic,
+        fye,
+        filed,
+        ROW_NUMBER() OVER (
+            PARTITION BY CAST(cik AS BIGINT)
+            ORDER BY filed DESC, adsh DESC
+        ) AS rn,
+        MIN(CAST(strptime(filed, '%Y%m%d') AS DATE)) OVER (PARTITION BY CAST(cik AS BIGINT)) AS earliest_filed
+    FROM raw_sub
+    WHERE cik IS NOT NULL AND trim(CAST(cik AS VARCHAR)) <> ''
+),
+latest_per_cik AS (
+    SELECT
+        cik,
+        name,
+        sic,
+        fye,
+        earliest_filed AS first_filing_date
+    FROM ranked_subs
+    WHERE rn = 1
+)
 SELECT
-    CAST(cik AS BIGINT)                       AS cik,
-    any_value(name)                           AS name,
-    any_value(sic)                            AS sic,
-    NULL::VARCHAR                             AS sector,
-    NULL::INTEGER                             AS fiscal_year_end_month,
-    min(strptime(filed, '%Y%m%d')::DATE)      AS first_filing_date,
-    'pending'::VARCHAR                        AS eligibility_status,
-    NULL::VARCHAR                             AS exclusion_reason
-FROM raw_sub
-WHERE cik IS NOT NULL AND trim(CAST(cik AS VARCHAR)) <> ''
-GROUP BY CAST(cik AS BIGINT);
+    cik,
+    name,
+    sic,
+    NULL::VARCHAR AS sector,
+    NULL::INTEGER AS fiscal_year_end_month,
+    first_filing_date,
+    'pending'::VARCHAR AS eligibility_status,
+    NULL::VARCHAR AS exclusion_reason
+FROM latest_per_cik;
 """
 
 
 def build_company_table(con: duckdb.DuckDBPyConnection) -> int:
     con.execute(COMPANY_DDL)
     rows = con.execute("SELECT cik, sic FROM company").fetchall()
+    # Get the fye values from the latest filing for each company
+    fye_query = """
+    WITH ranked_subs AS (
+        SELECT
+            CAST(cik AS BIGINT) AS cik,
+            fye,
+            ROW_NUMBER() OVER (
+                PARTITION BY CAST(cik AS BIGINT)
+                ORDER BY filed DESC, adsh DESC
+            ) AS rn
+        FROM raw_sub
+        WHERE cik IS NOT NULL AND trim(CAST(cik AS VARCHAR)) <> ''
+    )
+    SELECT cik, fye FROM ranked_subs WHERE rn = 1
+    """
     fye = {
-        int(c): f for c, f in con.execute(
-            "SELECT CAST(cik AS BIGINT), any_value(fye) FROM raw_sub "
-            "WHERE cik IS NOT NULL AND trim(CAST(cik AS VARCHAR)) <> '' "
-            "GROUP BY CAST(cik AS BIGINT)"
-        ).fetchall()
+        int(c): f for c, f in con.execute(fye_query).fetchall()
     }
     con.executemany(
         "UPDATE company SET sector = ?, fiscal_year_end_month = ? WHERE cik = ?",
