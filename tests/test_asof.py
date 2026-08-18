@@ -56,3 +56,37 @@ def test_unknown_field_returns_empty(tmp_path):
     con = _restated(tmp_path)
     assert get_facts_asof(con, 1, ["capex"], date(2023, 1, 1),
                           date(2023, 12, 31), date(2024, 1, 1)) == []
+
+def test_period_type_partition_keeps_duration_and_instant_separate(tmp_path):
+    """duration and instant facts for the same field/period must never be
+    ranked against each other. If `period_type` were dropped from the
+    window's PARTITION BY, the instant fact below would be silently
+    shadowed by whichever duration row has the latest filed_date."""
+    con = _restated(tmp_path)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("f3", 1, "revenue", 50.0, "USD", "instant",
+             None, date(2023, 3, 31), "2023", "Q1",
+             date(2023, 6, 1), "acc-3", "Revenues", "MR-0003", 1.0, "2023q2"),
+        ],
+    )
+    got = get_facts_asof(con, 1, ["revenue"], date(2023, 1, 1),
+                         date(2023, 12, 31), date(2024, 1, 1))
+    assert len(got) == 2
+    assert {g.period_type for g in got} == {"duration", "instant"}
+
+def test_multiple_fields_returns_rows_for_each(tmp_path):
+    con = _restated(tmp_path)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("f4", 1, "opex", 30.0, "USD", "duration",
+             date(2023, 1, 1), date(2023, 3, 31), "2023", "Q1",
+             date(2023, 5, 10), "acc-4", "OperatingExpenses", "MR-0004", 1.0, "2023q2"),
+        ],
+    )
+    got = get_facts_asof(con, 1, ["revenue", "opex"], date(2023, 1, 1),
+                         date(2023, 12, 31), date(2023, 9, 1))
+    assert {g.canonical_field for g in got} == {"revenue", "opex"}
+    assert len(got) == 2

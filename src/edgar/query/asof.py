@@ -39,6 +39,13 @@ def get_facts_asof(
     For each (field, period) the row with the greatest filed_date not later
     than as_of wins. Rows filed after as_of are invisible — this is the
     point-in-time guarantee.
+
+    `period_start` and `period_end` bound the fact's `period_end` column
+    only — `period_start` is never compared against the `period_start`
+    column. A duration fact that began before `period_start` is still
+    returned as long as it ends within [period_start, period_end]. This is
+    intentional: an as-of query selects facts describing a period that
+    *ends* inside the requested window, not facts fully contained by it.
     """
     if not fields:
         return []
