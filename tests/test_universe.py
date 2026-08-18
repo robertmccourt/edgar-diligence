@@ -18,7 +18,8 @@ def _db(tmp_path):
         (5,'SPARSE','3571','manufacturing',12,'2019-01-01','pending',NULL),
         (6,'HISTORY','3571','manufacturing',12,'2019-01-01','pending',NULL),
         (7,'NOFACTS','3571','manufacturing',12,'2019-01-01','pending',NULL),
-        (8,'FOREIGN','3571','manufacturing',12,'2019-01-01','pending',NULL)""")
+        (8,'FOREIGN','3571','manufacturing',12,'2019-01-01','pending',NULL),
+        (9,'FOREIGNFACTS','3571','manufacturing',12,'2019-01-01','pending',NULL)""")
     fields = ["revenue","net_income","total_assets","total_liabilities",
               "stockholders_equity","operating_cash_flow"]
     rows = []
@@ -32,6 +33,10 @@ def _db(tmp_path):
                      None, pe, "2020", "Q1", pe, "a", "T", "MR-0001", 1.0, "x"))
         rows.append((f"c4-{q}", 4, "revenue", 1.0, "USD", "duration",
                      None, pe, "2020", "Q1", pe, "a", "T", "MR-0001", 1.0, "x"))
+        for f in fields:
+            rows.append((f"c9-{q}-{f}", 9, f, 1.0, "USD", "duration",
+                         None, pe, "2020", "Q1", pe, "a", "T", "MR-0001",
+                         1.0, "x"))
     for q in range(6):  # only 6 distinct period_ends: under MIN_QUARTERS
         pe = f"20{19 + q // 4}-{3 * (q % 4) + 1:02d}-28"
         for f in fields:
@@ -47,7 +52,8 @@ def _db(tmp_path):
         ('s5',5,'SPARSE','3571','1231','10-K','20231231','2023','FY','20240215','0','1','1','2024q1'),
         ('s6',6,'HISTORY','3571','1231','10-K','20231231','2023','FY','20240215','0','1','1','2024q1'),
         ('s7',7,'NOFACTS','3571','1231','10-K','20231231','2023','FY','20240215','0','1','1','2024q1'),
-        ('s8',8,'FOREIGN','3571','1231','20-F','20231231','2023','FY','20240215','0','1','1','2024q1')""")
+        ('s8',8,'FOREIGN','3571','1231','20-F','20231231','2023','FY','20240215','0','1','1','2024q1'),
+        ('s9',9,'FOREIGNFACTS','3571','1231','20-F','20231231','2023','FY','20240215','0','1','1','2024q1')""")
     return con
 
 def test_clean_company_is_eligible(tmp_path):
@@ -88,6 +94,18 @@ def test_foreign_private_issuer_excluded(tmp_path):
     con = _db(tmp_path); apply_eligibility(con)
     status, reason = con.execute(
         "SELECT eligibility_status, exclusion_reason FROM company WHERE cik=8"
+    ).fetchone()
+    assert status == "excluded" and reason == "foreign_private_issuer"
+
+def test_foreign_private_issuer_excluded_despite_ample_facts(tmp_path):
+    # cik=8 alone leaves the FPI rule's effect ambiguous: it has no fact
+    # rows at all, so it would also be caught by no_facts if the FPI rule
+    # were absent. cik=9 has 14 distinct period_ends and 6 canonical
+    # fields -- it would sail through every other rule -- so this proves
+    # the FPI rule is load-bearing rather than incidentally shadowed.
+    con = _db(tmp_path); apply_eligibility(con)
+    status, reason = con.execute(
+        "SELECT eligibility_status, exclusion_reason FROM company WHERE cik=9"
     ).fetchone()
     assert status == "excluded" and reason == "foreign_private_issuer"
 
