@@ -60,6 +60,7 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
         JOIN best b ON b.source_tag = n.tag AND b.rn = 1
         WHERE n.value IS NOT NULL AND trim(n.value) <> ''
           AND coalesce(n.coreg, '') = ''
+          AND coalesce(n.segments, '') = ''
         """
     ).fetchall()
 
@@ -79,9 +80,19 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
             rule_id, conf, src_q,
         ))
 
-    con.executemany(
-        "INSERT OR REPLACE INTO fact VALUES "
-        "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        payload,
-    )
-    return len(payload)
+    if payload:
+        con.executemany(
+            "INSERT OR REPLACE INTO fact VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            payload,
+        )
+
+    attempted = len(payload)
+    persisted = len({row[0] for row in payload})
+    if persisted != attempted:
+        print(
+            f"WARNING: build_facts: {attempted} rows attempted, "
+            f"{persisted} persisted, {attempted - persisted} dropped by "
+            f"fact_id collision"
+        )
+    return persisted

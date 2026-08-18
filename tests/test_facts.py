@@ -47,3 +47,49 @@ def test_instant_fact_has_null_start(tmp_path):
         "SELECT period_type, period_start FROM fact "
         "WHERE canonical_field = 'total_assets'").fetchone()
     assert row[0] == "instant" and row[1] is None
+
+
+def test_segment_row_does_not_clobber_consolidated_value(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240802','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','Revenues','us-gaap/2024','','20240630','1','USD','100000000','','','2024q3'),
+        ('a1','Revenues','us-gaap/2024','','20240630','1','USD','7000000','','BusinessSegments=Widgets;','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 1
+    rows = con.execute(
+        "SELECT value FROM fact WHERE canonical_field = 'revenue'").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 100000000.0
+
+
+def test_null_segments_treated_as_consolidated(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240802','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','Assets','us-gaap/2024','','20240630','0','USD','331612000000',NULL,NULL,'2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 1
+    row = con.execute(
+        "SELECT value FROM fact WHERE canonical_field = 'total_assets'").fetchone()
+    assert row[0] == 331612000000.0
+
+
+def test_segment_only_concept_yields_no_fact(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240802','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','Revenues','us-gaap/2024','','20240630','1','USD','7000000','','BusinessSegments=Widgets;','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 0
+    rows = con.execute("SELECT * FROM fact").fetchall()
+    assert rows == []
