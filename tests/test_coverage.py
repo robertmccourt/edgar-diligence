@@ -77,6 +77,20 @@ def test_custom_aggregate_asset_tag_is_still_unmapped(tmp_path):
     m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
     assert m["total_assets"] == FieldStatus.UNMAPPED
 
+def test_members_equity_alone_is_unmapped_for_stockholders_equity(tmp_path):
+    con = _db(tmp_path)
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','MembersEquity','acme/2023','','20231231','0','USD','700','','','2024q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["stockholders_equity"] == FieldStatus.UNMAPPED
+
+def test_equity_method_investments_is_still_not_disclosed(tmp_path):
+    con = _db(tmp_path)
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','EquityMethodInvestments','us-gaap/2023','','20231231','0','USD','25','','','2024q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["stockholders_equity"] == FieldStatus.NOT_DISCLOSED
+
 def test_unmapped_tag_from_a_different_period_does_not_leak_in(tmp_path):
     con = _db(tmp_path)
     # Filing for an earlier period (2022-12-31) reports a related-but-unmapped

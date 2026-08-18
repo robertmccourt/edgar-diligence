@@ -28,7 +28,8 @@ class FieldStatus(StrEnum):
 # otherwise match every component line item that happens to contain it
 # (IntangibleAssetsNetExcludingGoodwill, DeferredTaxAssetsNet, ...).
 _CONCEPT_HINTS: dict[str, tuple[str, ...]] = {
-    "revenue": ("revenue", "netsales", "salesrevenue", "totalsales"),
+    "revenue": ("revenue", "netsales", "salesrevenue", "totalsales",
+               "merchandisesales", "productsales"),
     "cost_of_revenue": ("costofrevenue", "costofgoods", "costofsales",
                         "costofproduct", "costofservice"),
     "gross_profit": ("grossprofit", "grossmargin"),
@@ -37,7 +38,8 @@ _CONCEPT_HINTS: dict[str, tuple[str, ...]] = {
     "total_assets": ("totalassets",),
     "total_liabilities": ("totalliabilities",),
     "stockholders_equity": ("stockholdersequity", "shareholdersequity",
-                            "totalequity"),
+                            "totalequity", "membersequity", "partnerscapital",
+                            "equityattributabletoparent"),
     "operating_cash_flow": ("operatingactivities",),
     "capex": ("propertyplantandequipment", "capitalexpenditure",
               "productiveassets"),
