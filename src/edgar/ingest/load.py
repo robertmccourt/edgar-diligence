@@ -1,8 +1,24 @@
 from pathlib import Path
+import csv
 import duckdb
 from edgar.ingest.archives import Quarter
 
 TABLES = {"sub": "raw_sub", "num": "raw_num", "tag": "raw_tag", "pre": "raw_pre"}
+
+# Threshold for raising an exception on data loss due to parse errors.
+# Real DERA files carry occasional malformed rows; one bad row per millions is acceptable.
+# Beyond 1%, the file is likely corrupted or the parser has diverged from DERA spec.
+REJECT_RATE_THRESHOLD = 0.01
+
+
+def _true_row_count(path: Path) -> int:
+    """Authoritative data-row count.
+
+    Uses the csv module rather than line counting because `segments` values
+    contain embedded newlines inside quoted fields, so lines != rows.
+    """
+    with path.open(newline="", encoding="utf-8", errors="replace") as fh:
+        return sum(1 for _ in csv.reader(fh, delimiter="\t", quotechar='"')) - 1
 
 
 def load_quarter(
@@ -50,9 +66,33 @@ def load_quarter(
                 """,
                 [str(files[kind])],
             )
-            counts[kind] = con.execute(
+            inserted = con.execute(
                 f"SELECT count(*) FROM {table} WHERE source_quarter = ?", [q.label]
             ).fetchone()[0]
+            counts[kind] = inserted
+
+            # Measure and report parse errors: csv.reader gives authoritative row
+            # count (embedded newlines in quoted fields are handled correctly),
+            # then compare against rows DuckDB actually inserted.
+            expected = _true_row_count(files[kind])
+            rejected = expected - inserted
+            if rejected > 0:
+                reject_rate = rejected / expected if expected > 0 else 0
+                if reject_rate > REJECT_RATE_THRESHOLD:
+                    raise ValueError(
+                        f"{kind}.txt: {rejected} rows rejected (expected {expected}, "
+                        f"inserted {inserted}, reject rate {reject_rate:.1%} > "
+                        f"{REJECT_RATE_THRESHOLD:.1%} threshold) for quarter {q.label}. "
+                        f"File may be corrupted or parser diverged from DERA spec. "
+                        f"Transaction rolled back; no partial state."
+                    )
+                else:
+                    print(
+                        f"WARNING: {kind}.txt: {rejected} rows rejected "
+                        f"(expected {expected}, inserted {inserted}, "
+                        f"reject rate {reject_rate:.1%}) for quarter {q.label}"
+                    )
+
         con.execute("COMMIT")
     except Exception:
         con.execute("ROLLBACK")
