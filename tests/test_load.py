@@ -64,3 +64,46 @@ def test_load_keeps_quarters_separate(tmp_path):
     load_quarter(con, f, Quarter(2024, 3))
     load_quarter(con, f, Quarter(2024, 4))
     assert con.execute("SELECT count(*) FROM raw_num").fetchone()[0] == 2
+
+def test_load_places_values_in_correct_columns(tmp_path):
+    """Prove explicit column list and ORDER BY ordinal_position land values correctly."""
+    con = connect(tmp_path / "t.duckdb"); init_schema(con)
+    load_quarter(con, _files(tmp_path), Quarter(2024, 3))
+
+    # Verify a specific field value reads from the correct column, not shifted.
+    # Note: cik is BIGINT in schema, so it's auto-cast from CSV string to integer.
+    row = con.execute("SELECT cik, name, form FROM raw_sub").fetchone()
+    assert row[0] == 320193, f"cik should be 320193, got {row[0]}"
+    assert row[1] == "APPLE INC", f"name should be APPLE INC, got {row[1]}"
+    assert row[2] == "10-Q", f"form should be 10-Q, got {row[2]}"
+
+def test_load_transaction_consistency_on_mid_loop_failure(tmp_path):
+    """Prove mid-loop failure leaves no partial state; transaction rolls back entire quarter."""
+    con = connect(tmp_path / "t.duckdb"); init_schema(con)
+
+    # First load succeeds for all tables for 2024q3
+    f = _files(tmp_path)
+    load_quarter(con, f, Quarter(2024, 3))
+
+    # Verify baseline: all tables have 2024q3 data
+    assert con.execute("SELECT count(*) FROM raw_sub WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_num WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_tag WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_pre WHERE source_quarter='2024q3'").fetchone()[0] == 1
+
+    # Now attempt to load 2024q3 again with missing pre.txt to trigger mid-loop failure
+    bad_files = _files(tmp_path)
+    bad_files["pre"].unlink()  # Delete the pre.txt file to cause an error when opening
+
+    try:
+        load_quarter(con, bad_files, Quarter(2024, 3))
+        assert False, "Expected exception from missing pre.txt"
+    except FileNotFoundError:
+        pass  # Expected: pre.txt is missing
+
+    # Verify transaction rollback: 2024q3 still has original data because entire
+    # transaction was rolled back when pre.txt open failed. No partial state.
+    assert con.execute("SELECT count(*) FROM raw_sub WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_num WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_tag WHERE source_quarter='2024q3'").fetchone()[0] == 1
+    assert con.execute("SELECT count(*) FROM raw_pre WHERE source_quarter='2024q3'").fetchone()[0] == 1
