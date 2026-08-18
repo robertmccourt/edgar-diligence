@@ -221,7 +221,7 @@ erDiagram
         string source_tag
         string mapping_rule_id FK
         float confidence
-        string supersedes_fact_id
+        string source_quarter
     }
     MAPPING_RULE {
         string mapping_rule_id PK
