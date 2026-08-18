@@ -127,9 +127,8 @@ def test_load_reject_count_under_threshold_with_warning(tmp_path, capsys):
     con = connect(tmp_path / "t.duckdb"); init_schema(con)
     f = _files(tmp_path)
 
-    # Add a malformed row (missing final tab) to num.txt: 1 bad row out of 2 total = 50% reject.
-    # Wait, that would be over threshold. Let me add many valid rows so 1 bad is <1%.
-    # 1 bad out of 101 rows = 0.99% which is just under 1%.
+    # Add one unparseable row to num.txt: 1 bad out of 101 = 0.99% reject rate (under 1% threshold).
+    # Row with wrong column count (2 fields instead of 9) will be skipped by ignore_errors=true.
     good_rows = "\n".join([
         "0000320193-24-000081\tRevenues\tus-gaap/2024\t\t20240630\t1\tUSD\t85777000000\t"
         for _ in range(100)
@@ -137,23 +136,21 @@ def test_load_reject_count_under_threshold_with_warning(tmp_path, capsys):
     f["num"].write_text(
         "adsh\ttag\tversion\tcoreg\tddate\tqtrs\tuom\tvalue\tfootnote\n" +
         good_rows + "\n" +
-        "0000320193-24-000081\tRevenues\tus-gaap/2024\t20240630\t1\tUSD"  # Malformed: missing value and footnote
+        "0000320193-24-000081\tRevenues"  # Malformed: only 2 fields instead of 9; ignore_errors=true skips it
     )
 
     load_quarter(con, f, Quarter(2024, 3))
 
-    # Verify warning was printed (100 expected, 100 inserted, 0 rejected in this case)
-    # Actually, the malformed row might not be rejected by DuckDB with ignore_errors=true
-    # Let me reconsider: with ignore_errors=true, DuckDB will skip unparseable rows.
-    # But we're reading a CSV with tab-delimited values. Let me create a truly unparseable row.
-    # Actually, let me use a simpler approach: add a row with a syntax error in a quoted field.
-    # Or just verify that if there are rejects, the warning appears.
-
+    # Verify warning was printed with correct counts and reject rate
     captured = capsys.readouterr()
-    # The warning should only appear if there are actual rejects
-    # Since I added a potentially malformed row, check if warning was printed
-    # For now, just verify the load succeeded (no exception)
-    assert con.execute("SELECT count(*) FROM raw_num WHERE source_quarter='2024q3'").fetchone()[0] >= 100
+    assert "WARNING" in captured.out, f"Expected WARNING in output, got: {captured.out}"
+    # Check that warning includes expected counts: expected 101, inserted 100, rejected 1
+    assert "101" in captured.out, f"Expected '101' (expected rows) in warning, got: {captured.out}"
+    assert "100" in captured.out, f"Expected '100' (inserted rows) in warning, got: {captured.out}"
+    assert "1" in captured.out, f"Expected '1' (rejected rows) in warning, got: {captured.out}"
+
+    # Verify exactly one row was rejected (not just >= 100)
+    assert con.execute("SELECT count(*) FROM raw_num WHERE source_quarter='2024q3'").fetchone()[0] == 100
 
 def test_load_reject_count_over_threshold_raises_and_rolls_back(tmp_path):
     """File with rejects over 1% threshold raises and rolls back."""
