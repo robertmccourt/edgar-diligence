@@ -1,0 +1,20 @@
+# Data — never committed. Rebuilt from SEC bulk archives via `make build`.
+data/
+*.duckdb
+*.duckdb.wal
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+
+# OS
+.DS_Store
