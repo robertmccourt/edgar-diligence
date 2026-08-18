@@ -93,3 +93,61 @@ def test_segment_only_concept_yields_no_fact(tmp_path):
     assert n == 0
     rows = con.execute("SELECT * FROM fact").fetchall()
     assert rows == []
+
+
+def test_restatement_preserved_as_second_row(tmp_path):
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240802','0','1','1','2024q3'),
+        ('a2','320193','APPLE','3571','0930','10-Q/A','20240630','2024','Q3','20240915','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','Revenues','us-gaap/2024','','20240630','1','USD','85777000000','','','2024q3'),
+        ('a2','Revenues','us-gaap/2024','','20240630','1','USD','86000000000','','','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 2
+    rows = con.execute(
+        "SELECT fact_id, value, filed_date FROM fact "
+        "WHERE canonical_field = 'revenue' ORDER BY filed_date").fetchall()
+    assert len(rows) == 2
+    fact_ids = {r[0] for r in rows}
+    assert len(fact_ids) == 2
+    values = {r[1] for r in rows}
+    assert values == {85777000000.0, 86000000000.0}
+    filed_dates = {str(r[2]) for r in rows}
+    assert filed_dates == {"2024-08-02", "2024-09-15"}
+
+
+def test_non_numeric_value_skipped_with_warning(tmp_path, capsys):
+    con = connect(tmp_path / "t.duckdb"); _seed(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a2','320193','APPLE','3571','0930','10-Q','20240930','2024','Q4','20241101','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a2','Revenues','us-gaap/2024','','20240930','1','USD','not_a_number','','','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 2  # the two good facts from _seed still load
+    fields = {r[0] for r in con.execute(
+        "SELECT canonical_field FROM fact").fetchall()}
+    assert fields == {"revenue", "total_assets"}
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "1" in out  # one row skipped
+
+
+def test_malformed_filed_skipped_with_warning(tmp_path, capsys):
+    con = connect(tmp_path / "t.duckdb"); _seed(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a3','320193','APPLE','3571','0930','10-Q','20240930','2024','Q4','BADDATE','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a3','Assets','us-gaap/2024','','20240930','0','USD','999000000','','','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 2  # the two good facts from _seed still load; a3 row skipped
+    fields = {r[0] for r in con.execute(
+        "SELECT canonical_field FROM fact").fetchall()}
+    assert fields == {"revenue", "total_assets"}
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "1" in out  # one row skipped

@@ -1,6 +1,6 @@
 import hashlib
 import duckdb
-from edgar.curate.periods import parse_period
+from edgar.curate.periods import parse_period, parse_yyyymmdd
 
 FACT_DDL = """
 CREATE TABLE IF NOT EXISTS fact (
@@ -65,13 +65,15 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
     ).fetchall()
 
     payload = []
+    skipped = 0
     for (adsh, tag, ddate, qtrs, uom, coreg, value, cik, filed, fy, fp,
          src_q, field, sign, scale, rule_id, conf) in rows:
         try:
             period = parse_period(ddate, qtrs)
             numeric = float(value) * sign * scale
-            filed_date = f"{filed[:4]}-{filed[4:6]}-{filed[6:]}"
+            filed_date = parse_yyyymmdd(filed)
         except (ValueError, TypeError):
+            skipped += 1
             continue
         payload.append((
             make_fact_id(adsh, tag, ddate, qtrs, uom, coreg),
@@ -94,5 +96,10 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
             f"WARNING: build_facts: {attempted} rows attempted, "
             f"{persisted} persisted, {attempted - persisted} dropped by "
             f"fact_id collision"
+        )
+    if skipped:
+        print(
+            f"WARNING: build_facts: {skipped} of {len(rows)} rows skipped "
+            f"(malformed ddate, qtrs, value, or filed)"
         )
     return persisted
