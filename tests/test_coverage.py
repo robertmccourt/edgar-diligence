@@ -62,3 +62,29 @@ def test_every_canonical_field_gets_a_status(tmp_path):
     con = _db(tmp_path)
     m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
     assert len(m) == 10
+
+def test_component_asset_tag_alone_is_not_disclosed_not_unmapped(tmp_path):
+    con = _db(tmp_path)
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','IntangibleAssetsNetExcludingGoodwill','us-gaap/2023','','20231231','0','USD','40','','','2024q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["total_assets"] == FieldStatus.NOT_DISCLOSED
+
+def test_custom_aggregate_asset_tag_is_still_unmapped(tmp_path):
+    con = _db(tmp_path)
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','AcmeTotalAssets','acme/2023','','20231231','0','USD','900','','','2024q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["total_assets"] == FieldStatus.UNMAPPED
+
+def test_unmapped_tag_from_a_different_period_does_not_leak_in(tmp_path):
+    con = _db(tmp_path)
+    # Filing for an earlier period (2022-12-31) reports a related-but-unmapped
+    # tag. It must not be visible when scoring the 2023-12-31 period, whose
+    # own filing never reported anything resembling cost_of_revenue.
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a0','1','CO','3571','1231','10-K','20221231','2022','FY','20230215','0','1','1','2023q1')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a0','AcmeCostOfProductRevenue','acme/2022','','20221231','4','USD','55','','','2023q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["cost_of_revenue"] == FieldStatus.NOT_DISCLOSED

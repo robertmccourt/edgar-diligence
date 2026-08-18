@@ -26,6 +26,16 @@ def apply_eligibility(con: duckdb.DuckDBPyConnection) -> dict[str, int]:
     con.execute(
         """
         UPDATE company SET eligibility_status='excluded',
+                           exclusion_reason='foreign_private_issuer'
+        WHERE eligibility_status='pending' AND cik NOT IN (
+            SELECT DISTINCT cik FROM raw_sub WHERE form IN ('10-K', '10-Q')
+        )
+        """
+    )
+
+    con.execute(
+        """
+        UPDATE company SET eligibility_status='excluded',
                            exclusion_reason='insufficient_history'
         WHERE eligibility_status='pending' AND cik IN (
             SELECT cik FROM fact GROUP BY cik
