@@ -1,3 +1,4 @@
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,16 +60,37 @@ class RateLimiter:
 _DEFAULT_LIMITER = RateLimiter()
 
 
+CHUNK_BYTES = 1 << 20
+
+
 def download_archive(
     q: Quarter,
     dest_dir: Path,
     client: httpx.Client | None = None,
     limiter: RateLimiter | None = None,
 ) -> Path:
+    """Fetch one quarterly archive into `dest_dir`, atomically.
+
+    The archive is streamed to a `.part` sibling and moved onto the final
+    path with os.replace() only once the body is fully written. os.replace
+    is atomic within a filesystem, so `{label}.zip` either does not exist
+    or is a complete archive — never a truncated one.
+
+    This matters because the cache is trusted on sight: `if dest.exists():
+    return dest` never revalidates, so a single interruption during a
+    direct write to `dest` would poison that quarter permanently, and a
+    full build fetches ~29 archives of 100-200MB each. Any partial file is
+    removed in the `finally`, so an interrupted run leaves the cache
+    exactly as it found it and the next run simply re-fetches.
+
+    Streaming rather than buffering `resp.content` also holds peak memory
+    to one chunk instead of the whole archive.
+    """
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{q.label}.zip"
     if dest.exists():
         return dest
+    partial = dest.with_name(dest.name + ".part")
 
     (limiter or _DEFAULT_LIMITER).acquire()
     owns = client is None
@@ -78,10 +100,14 @@ def download_archive(
         follow_redirects=True,
     )
     try:
-        resp = client.get(archive_url(q))
-        resp.raise_for_status()
-        dest.write_bytes(resp.content)
+        with client.stream("GET", archive_url(q)) as resp:
+            resp.raise_for_status()
+            with open(partial, "wb") as fh:
+                for chunk in resp.iter_bytes(CHUNK_BYTES):
+                    fh.write(chunk)
+        os.replace(partial, dest)
     finally:
+        partial.unlink(missing_ok=True)
         if owns:
             client.close()
     return dest
