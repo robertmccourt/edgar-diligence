@@ -9,6 +9,7 @@ from edgar.curate.facts import create_fact_table, build_facts
 from edgar.curate.universe import apply_eligibility
 from edgar.analysis.restatement import restatement_stats, filing_lag_stats
 from edgar.quality.checks import run_quality_checks
+from edgar.quality.coverage_stats import mapping_coverage
 
 
 def build_all(con, start: Quarter, end: Quarter, raw_dir: Path) -> dict:
@@ -25,11 +26,13 @@ def build_all(con, start: Quarter, end: Quarter, raw_dir: Path) -> dict:
 
     n_companies = build_company_table(con)
     n_facts = build_facts(con)
+    coverage = mapping_coverage(con)
     eligibility = apply_eligibility(con)
 
     return {
         "companies": n_companies,
         "facts": n_facts,
+        "coverage": coverage,
         "eligibility": eligibility,
         "restatement": restatement_stats(con),
         "filing_lag": filing_lag_stats(con),
