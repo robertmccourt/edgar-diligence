@@ -208,3 +208,115 @@ def test_skipped_warning_separates_malformed_from_impossible(tmp_path, capsys):
     assert "2 of 4 rows skipped" in out
     assert "1 malformed" in out
     assert "1 filed before" in out
+
+
+def test_competing_tags_in_one_filing_yield_one_fact(tmp_path):
+    """A filing reporting both NetIncomeLoss and ProfitLoss for the same
+    period has reported one net income, twice, under two tags — not two
+    facts. MR-0010 outranks MR-0011 ("used when NetIncomeLoss absent"), so
+    NetIncomeLoss wins and ProfitLoss emits nothing.
+
+    Modelled on cik=1452936, which filed NetIncomeLoss -144,151,000
+    alongside three different ProfitLoss values in a single accession.
+    """
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','1452936','ACME','3571','1231','10-K','20231231','2023','FY','20240315','0','1','1','2024q1')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','NetIncomeLoss','us-gaap/2023','','20231231','4','USD','-144151000','','','2024q1'),
+        ('a1','ProfitLoss','us-gaap/2023','','20231231','4','USD','-140000000','','','2024q1')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 1
+    rows = con.execute(
+        "SELECT source_tag, value, mapping_rule_id FROM fact "
+        "WHERE canonical_field = 'net_income'").fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "NetIncomeLoss"
+    assert rows[0][1] == -144151000.0
+    assert rows[0][2] == "MR-0010"
+
+
+def test_lower_priority_tag_used_when_winner_absent(tmp_path):
+    """Arbitration must not delete the fallback: a filing that reports only
+    ProfitLoss still yields a net_income fact."""
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','1452936','ACME','3571','1231','10-K','20231231','2023','FY','20240315','0','1','1','2024q1')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','ProfitLoss','us-gaap/2023','','20231231','4','USD','-140000000','','','2024q1')""")
+    create_fact_table(con)
+    assert build_facts(con) == 1
+    row = con.execute(
+        "SELECT source_tag, value FROM fact "
+        "WHERE canonical_field = 'net_income'").fetchone()
+    assert row == ("ProfitLoss", -140000000.0)
+
+
+def test_three_competing_revenue_tags_collapse_to_the_highest_priority(tmp_path):
+    """revenue has four competing tags. A filing using three of them has
+    reported revenue once; the ASC 606 element (MR-0001) is preferred."""
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240802','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','SalesRevenueNet','us-gaap/2024','','20240630','1','USD','85000000000','','','2024q3'),
+        ('a1','Revenues','us-gaap/2024','','20240630','1','USD','85500000000','','','2024q3'),
+        ('a1','RevenueFromContractWithCustomerExcludingAssessedTax','us-gaap/2024','','20240630','1','USD','85777000000','','','2024q3')""")
+    create_fact_table(con)
+    assert build_facts(con) == 1
+    rows = con.execute(
+        "SELECT source_tag, value FROM fact "
+        "WHERE canonical_field = 'revenue'").fetchall()
+    assert rows == [
+        ("RevenueFromContractWithCustomerExcludingAssessedTax", 85777000000.0)]
+
+
+def test_arbitration_is_scoped_to_one_filing_and_period(tmp_path):
+    """Arbitration resolves competition *inside* one filing-period-unit. It
+    must not reach across filings (that is a restatement) or across periods
+    (those are different figures)."""
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','1','CO','3571','1231','10-K','20231231','2023','FY','20240315','0','1','1','2024q1'),
+        ('a2','1','CO','3571','1231','10-K/A','20231231','2023','FY','20240601','0','1','1','2024q2')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','NetIncomeLoss','us-gaap/2023','','20231231','4','USD','-144151000','','','2024q1'),
+        ('a1','ProfitLoss','us-gaap/2023','','20231231','4','USD','-140000000','','','2024q1'),
+        ('a1','NetIncomeLoss','us-gaap/2023','','20231231','1','USD','-30000000','','','2024q1'),
+        ('a2','ProfitLoss','us-gaap/2023','','20231231','4','USD','-145000000','','','2024q2')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    # a1 annual (arbitrated to NetIncomeLoss), a1 quarterly, a2 restatement
+    assert n == 3
+    rows = con.execute(
+        "SELECT accession, period_start, source_tag, value FROM fact "
+        "WHERE canonical_field = 'net_income' "
+        "ORDER BY accession, period_start").fetchall()
+    assert [(r[0], r[2], r[3]) for r in rows] == [
+        ("a1", "NetIncomeLoss", -144151000.0),
+        ("a1", "NetIncomeLoss", -30000000.0),
+        ("a2", "ProfitLoss", -145000000.0),
+    ]
+
+
+def test_arbitration_is_per_unit(tmp_path):
+    """The same figure in two currencies is two figures, and each is
+    arbitrated on its own — collapsing them would silently drop one."""
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a1','1296774','CO','3571','1231','10-K','20231231','2023','FY','20240315','0','1','1','2024q1')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a1','Assets','us-gaap/2023','','20231231','0','USD','205617546','','','2024q1'),
+        ('a1','Assets','us-gaap/2023','','20231231','0','CNY','1310318375','','','2024q1')""")
+    create_fact_table(con)
+    assert build_facts(con) == 2
+    rows = con.execute(
+        "SELECT unit, value FROM fact WHERE canonical_field = 'total_assets' "
+        "ORDER BY unit").fetchall()
+    assert rows == [("CNY", 1310318375.0), ("USD", 205617546.0)]

@@ -37,9 +37,31 @@ def create_fact_table(con: duckdb.DuckDBPyConnection) -> None:
 def build_facts(con: duckdb.DuckDBPyConnection) -> int:
     """Project mapped raw_num rows into the bitemporal fact table.
 
-    Only the highest-priority rule for each tag is applied. Rows whose tag
-    has no rule are skipped — they are the mapping tail, surfaced by the
-    coverage report rather than silently dropped.
+    Rows whose tag has no rule are skipped — they are the mapping tail,
+    surfaced by the coverage report rather than silently dropped.
+
+    Competing tags are arbitrated by `mapping_rule.priority`. Several tags
+    map to the same canonical field (NetIncomeLoss and ProfitLoss both mean
+    net_income; four tags mean revenue) and a single filing routinely
+    reports more than one of them for the same period. Emitting a fact for
+    each makes the figure ambiguous at query time: measured on the 2024
+    Q1-Q2 smoke build, 16,228 (cik, field, period, accession) groups carried
+    more than one distinct value from a single filing. So within one
+    (adsh, ddate, qtrs, uom, coreg) — one filing, one period, one unit — the
+    lowest-priority rule wins per canonical field and the losing tags emit
+    nothing. A filing reporting both NetIncomeLoss and ProfitLoss yields
+    exactly one net_income fact, from NetIncomeLoss, which is what the
+    MR-0011 rationale ("used when NetIncomeLoss absent") has always claimed.
+
+    This is the structural tier of resolution and uses only `num.txt`. The
+    richer refinement — preferring the tag presented in the primary
+    statement per `pre.txt` — is deliberately not attempted here.
+
+    Ties are broken on source_tag, then value, then source_quarter, so the
+    same input always produces the same fact regardless of scan order.
+    `uom` is part of the arbitration key, never collapsed: a company filing
+    the same balance-sheet line in USD and CNY has filed two figures, and
+    each is arbitrated on its own.
 
     Rows whose filing date precedes the end of the period they describe are
     dropped as impossible: a company cannot report actuals for a period that
@@ -53,22 +75,44 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
         """
         WITH best AS (
             SELECT source_tag, canonical_field, sign_convention, scale,
-                   mapping_rule_id, confidence,
-                   row_number() OVER (PARTITION BY source_tag
-                                      ORDER BY priority) AS rn
+                   mapping_rule_id, confidence, priority,
+                   row_number() OVER (
+                       PARTITION BY source_tag, canonical_field
+                       ORDER BY priority, mapping_rule_id) AS rn
             FROM mapping_rule
+        ),
+        mapped AS (
+            SELECT n.adsh AS adsh, n.tag AS tag, n.ddate AS ddate,
+                   n.qtrs AS qtrs, n.uom AS uom,
+                   coalesce(n.coreg, '') AS coreg,
+                   n.value AS value, s.cik AS cik, s.filed AS filed,
+                   s.fy AS fy, s.fp AS fp,
+                   n.source_quarter AS source_quarter,
+                   b.canonical_field AS canonical_field,
+                   b.sign_convention AS sign_convention, b.scale AS scale,
+                   b.mapping_rule_id AS mapping_rule_id,
+                   b.confidence AS confidence, b.priority AS priority
+            FROM raw_num n
+            JOIN raw_sub s
+              ON s.adsh = n.adsh AND s.source_quarter = n.source_quarter
+            JOIN best b ON b.source_tag = n.tag AND b.rn = 1
+            WHERE n.value IS NOT NULL AND trim(n.value) <> ''
+              AND coalesce(n.coreg, '') = ''
+              AND coalesce(n.segments, '') = ''
+        ),
+        arbitrated AS (
+            SELECT *, row_number() OVER (
+                       PARTITION BY adsh, ddate, qtrs, uom, coreg,
+                                    canonical_field
+                       ORDER BY priority, tag, value, source_quarter) AS pick
+            FROM mapped
         )
-        SELECT n.adsh, n.tag, n.ddate, n.qtrs, n.uom, coalesce(n.coreg, ''),
-               n.value, s.cik, s.filed, s.fy, s.fp, n.source_quarter,
-               b.canonical_field, b.sign_convention, b.scale,
-               b.mapping_rule_id, b.confidence
-        FROM raw_num n
-        JOIN raw_sub s
-          ON s.adsh = n.adsh AND s.source_quarter = n.source_quarter
-        JOIN best b ON b.source_tag = n.tag AND b.rn = 1
-        WHERE n.value IS NOT NULL AND trim(n.value) <> ''
-          AND coalesce(n.coreg, '') = ''
-          AND coalesce(n.segments, '') = ''
+        SELECT adsh, tag, ddate, qtrs, uom, coreg,
+               value, cik, filed, fy, fp, source_quarter,
+               canonical_field, sign_convention, scale,
+               mapping_rule_id, confidence
+        FROM arbitrated
+        WHERE pick = 1
         """
     ).fetchall()
 
