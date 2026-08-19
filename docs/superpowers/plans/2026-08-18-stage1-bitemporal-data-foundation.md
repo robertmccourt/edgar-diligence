@@ -640,6 +640,28 @@ def test_load_is_idempotent(tmp_path):
     load_quarter(con, f, Quarter(2024, 3))
     assert con.execute("SELECT count(*) FROM raw_num").fetchone()[0] == 1
 
+def test_load_handles_quoted_field_with_embedded_newline(tmp_path):
+    """DERA `segments` values carry embedded newlines and doubled quotes.
+
+    Verified against 2024q1: ~55% of num.txt rows have a non-empty segments
+    value and some contain raw newlines inside a quoted field. A parser with
+    quoting disabled splits those rows in half and silently corrupts them.
+    """
+    con = connect(tmp_path / "t.duckdb"); init_schema(con)
+    f = _files(tmp_path)
+    f["num"].write_text(
+        "adsh\ttag\tversion\tddate\tqtrs\tuom\tsegments\tcoreg\tvalue\tfootnote\n"
+        '0000320193-24-000081\tRevenues\tus-gaap/2024\t20240630\t1\tUSD\t'
+        '"InvestmentIdentifier=Abaco Energy, LLC\nPreferred ""Equity"";"'
+        "\t\t85777000000\t\n"
+    )
+    load_quarter(con, f, Quarter(2024, 3))
+    rows = con.execute("SELECT value, segments FROM raw_num").fetchall()
+    assert len(rows) == 1, f"quoted field split the row: {rows}"
+    assert rows[0][0] == "85777000000"
+    assert "Abaco Energy, LLC" in rows[0][1]
+    assert "\n" in rows[0][1]
+
 def test_load_handles_missing_optional_column(tmp_path):
     """num.txt has no 'segments' column in older quarters; load must NULL-fill."""
     con = connect(tmp_path / "t.duckdb"); init_schema(con)
@@ -685,7 +707,8 @@ def load_quarter(
         ).fetchall()]
 
         # DERA adds and removes optional columns between quarters (e.g. the
-        # 'segments' column in num.txt). Intersect the file's actual header
+        # 'segments' column in num.txt, added in the Dec-2024 reprocessing).
+        # Intersect the file's actual header
         # with the table's columns and NULL-fill the rest, so neither an
         # extra nor a missing optional column breaks the load.
         with files[kind].open(encoding="utf-8", errors="replace") as fh:
@@ -700,7 +723,7 @@ def load_quarter(
             INSERT INTO {table}
             SELECT {select}, '{q.label}'
             FROM read_csv(?, delim='\t', header=true, all_varchar=true,
-                          quote='', escape='', ignore_errors=true)
+                          quote='"', escape='"', ignore_errors=true)
             """,
             [str(files[kind])],
         )
@@ -713,7 +736,7 @@ def load_quarter(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_load.py -v`
-Expected: 4 passed
+Expected: 5 passed
 
 - [ ] **Step 5: Commit**
 
@@ -2287,7 +2310,7 @@ if __name__ == "__main__":
     report = build_all(
         con,
         Quarter(s.start_year, s.start_quarter),
-        Quarter(2026, 2),
+        Quarter(2026, 1),  # latest posted; 2026q2 not yet available
         s.raw_dir,
     )
     print(json.dumps(report, indent=2, default=str))

@@ -172,8 +172,12 @@ WHERE f.cik = :cik
   AND f.period_end = :period_end
   AND f.filed_date <= :as_of
 QUALIFY ROW_NUMBER() OVER (
-  PARTITION BY f.cik, f.canonical_field, f.period_end
-  ORDER BY f.filed_date DESC
+  -- A figure is identified by its full period AND unit, not by period_end
+  -- alone. Every 10-Q reports a 3-month and a year-to-date figure ending
+  -- the same day; a filer may report the same figure in two currencies.
+  PARTITION BY f.cik, f.canonical_field, f.period_start,
+               f.period_end, f.period_type, f.unit
+  ORDER BY f.filed_date DESC, f.accession DESC, f.fact_id DESC
 ) = 1;
 ```
 
@@ -221,7 +225,7 @@ erDiagram
         string source_tag
         string mapping_rule_id FK
         float confidence
-        string supersedes_fact_id
+        string source_quarter
     }
     MAPPING_RULE {
         string mapping_rule_id PK
