@@ -94,14 +94,42 @@ def restatement_history(
     cik: int,
     field: str,
     period_end: date,
+    *,
+    period_start: date | None,
+    period_type: str,
+    unit: str,
 ) -> list[AsOfFact]:
-    """Every reported version of one figure, oldest filing first."""
+    """Every reported version of one figure, oldest filing first.
+
+    A figure is (cik, canonical_field, period_start, period_end,
+    period_type, unit) — the same identity get_facts_asof partitions on.
+    period_end alone does not identify one: 14,162 (cik, field, period_end)
+    triples in the 2024 Q1-Q2 smoke build span more than one
+    (period_start, period_type), so keyed on period_end this function
+    returned unrelated quantities interleaved as if they were versions of
+    one number. Verified on cik=1855631, operating_cash_flow, period_end
+    2022-12-31: a 12-month -16,865,274 and a -200 came back as two
+    versions of the same figure.
+
+    That misreading is not cosmetic. The schema carries no
+    `supersedes_fact_id` column, and that omission was justified on the
+    grounds that supersession is derived here — so this function is the
+    only place the chain of revisions exists, and anything it splices
+    together is what a consumer will believe superseded what.
+
+    `period_start`, `period_type` and `unit` are keyword-only and
+    required: an instant fact is requested as `period_start=None`
+    explicitly, never by omission. Ordering is (filed_date, accession,
+    fact_id) so the sequence is stable when two filings share a date.
+    """
     rows = con.execute(
         f"""
         SELECT {_COLUMNS} FROM fact
         WHERE cik = ? AND canonical_field = ? AND period_end = ?
-        ORDER BY filed_date ASC
+          AND period_start IS NOT DISTINCT FROM ?
+          AND period_type = ? AND unit = ?
+        ORDER BY filed_date ASC, accession ASC, fact_id ASC
         """,
-        [cik, field, period_end],
+        [cik, field, period_end, period_start, period_type, unit],
     ).fetchall()
     return [AsOfFact(*r) for r in rows]

@@ -223,3 +223,95 @@ def test_two_currencies_are_not_a_restatement(tmp_path):
     assert s["total_figures"] == 2      # two figures, not one
     assert s["restated_figures"] == 0
     assert s["max_abs_pct_change"] == 0.0
+
+
+def test_within_filing_disagreement_is_ambiguous_not_restated(tmp_path):
+    """Two competing tags in ONE filing are not a restatement. Nobody
+    restated anything: the filer reported one figure under two tags and
+    the curation layer failed to pick one. Counting that as a restatement
+    reports a pipeline defect as filer behaviour.
+
+    Modelled on cik=1452936, which filed NetIncomeLoss -144,151,000
+    alongside ProfitLoss values in a single accession.
+    """
+    con = _db(tmp_path, [
+        _fu("a", 1452936, "net_income", -144151000.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-1"),
+        _fu("b", 1452936, "net_income", -140000000.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-1"),
+    ])
+    s = restatement_stats(con)
+    assert s["total_figures"] == 1
+    assert s["restated_figures"] == 0
+    assert s["restatement_rate"] == 0.0
+    assert s["max_abs_pct_change"] == 0.0
+    assert s["ambiguous_figures"] == 1
+    assert s["multi_filing_figures"] == 0
+    assert restatement_detail(con) == []
+
+
+def test_two_filing_restatement_is_counted_and_not_ambiguous(tmp_path):
+    """The other half of the same distinction: two filings, two accessions,
+    two filing dates, different values — a real restatement, which must
+    still be counted, and which is not ambiguous."""
+    con = _db(tmp_path, [
+        _fu("a", 1, "net_income", -100.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-1"),
+        _fu("b", 1, "net_income", -94.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 8, 1),
+            acc="acc-2"),
+    ])
+    s = restatement_stats(con)
+    assert s["total_figures"] == 1
+    assert s["restated_figures"] == 1
+    assert s["restatement_rate"] == 1.0
+    assert abs(s["median_abs_pct_change"] - 6.0) < 1e-9
+    assert s["ambiguous_figures"] == 0
+    assert s["multi_filing_figures"] == 1
+
+
+def test_ambiguity_and_restatement_are_counted_independently(tmp_path):
+    """A figure can be both: a later filing changed it, and one filing
+    reported it twice. The two counts are reported side by side and
+    neither is folded into the other."""
+    con = _db(tmp_path, [
+        # original filing, reported once
+        _fu("a", 1, "net_income", -100.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-1"),
+        # amendment, reporting two competing values at once
+        _fu("b", 1, "net_income", -94.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 8, 1),
+            acc="acc-2"),
+        _fu("c", 1, "net_income", -90.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 8, 1),
+            acc="acc-2"),
+    ])
+    s = restatement_stats(con)
+    assert s["total_figures"] == 1
+    assert s["restated_figures"] == 1
+    assert s["ambiguous_figures"] == 1
+    assert s["multi_filing_figures"] == 1
+    assert abs(s["max_abs_pct_change"] - 10.0) < 1e-9
+
+
+def test_original_is_deterministic_when_filings_tie_on_date(tmp_path):
+    """Two filings on the same day left the "original" arbitrary, so every
+    downstream percentage was non-reproducible across builds. The tiebreak
+    on (accession, value, fact_id) pins it."""
+    rows = [
+        _fu("a", 1, "revenue", 100.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-b"),
+        _fu("b", 1, "revenue", 50.0, "USD",
+            date(2023, 1, 1), date(2023, 12, 31), date(2024, 3, 15),
+            acc="acc-a"),
+    ]
+    first = restatement_stats(_db(tmp_path / "one", rows))
+    second = restatement_stats(_db(tmp_path / "two", list(reversed(rows))))
+    assert first == second
+    # acc-a sorts first, so 50.0 is the original and the change is +100%
+    assert abs(first["max_abs_pct_change"] - 100.0) < 1e-9

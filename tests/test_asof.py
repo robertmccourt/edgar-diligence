@@ -48,9 +48,17 @@ def test_as_of_equals_filed_date_is_inclusive(tmp_path):
     assert got[0].value == 100.0
 
 def test_restatement_history_returns_both_versions(tmp_path):
+    """Both filed versions of one genuine restatement, oldest first.
+
+    The figure is now addressed by its full identity — period_end alone
+    does not identify one — but the property under test is unchanged.
+    """
     con = _restated(tmp_path)
-    hist = restatement_history(con, 1, "revenue", date(2023, 3, 31))
+    hist = restatement_history(con, 1, "revenue", date(2023, 3, 31),
+                               period_start=date(2023, 1, 1),
+                               period_type="duration", unit="USD")
     assert [h.value for h in hist] == [100.0, 94.0]
+    assert [h.accession for h in hist] == ["acc-1", "acc-2"]
 
 def test_unknown_field_returns_empty(tmp_path):
     con = _restated(tmp_path)
@@ -218,3 +226,85 @@ def test_restatement_within_one_unit_still_collapses(tmp_path):
     assert by_unit["USD"].value == 94.0
     assert by_unit["USD"].accession == "acc-2"
     assert by_unit["CNY"].value == 700.0
+
+
+def _mixed_lengths(tmp_path):
+    """One period_end carrying a 12-month and a 3-month figure.
+
+    Modelled on cik=1855631, operating_cash_flow, period_end 2022-12-31,
+    where a 12-month -16,865,274 and a -200 were returned as if they were
+    two versions of one number.
+    """
+    con = connect(tmp_path / "t.duckdb")
+    create_fact_table(con)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            # 12-month figure, and its later restatement
+            ("m1", 1855631, "operating_cash_flow", -16865274.0, "USD",
+             "duration", date(2022, 1, 1), date(2022, 12, 31), "2022", "FY",
+             date(2023, 3, 31), "acc-1",
+             "NetCashProvidedByUsedInOperatingActivities", "MR-0016", 1.0, "q"),
+            ("m2", 1855631, "operating_cash_flow", -16900000.0, "USD",
+             "duration", date(2022, 1, 1), date(2022, 12, 31), "2022", "FY",
+             date(2024, 3, 31), "acc-2",
+             "NetCashProvidedByUsedInOperatingActivities", "MR-0016", 1.0, "q"),
+            # 3-month figure ending the same day — a different quantity
+            ("m3", 1855631, "operating_cash_flow", -200.0, "USD",
+             "duration", date(2022, 10, 1), date(2022, 12, 31), "2022", "Q4",
+             date(2023, 3, 31), "acc-1",
+             "NetCashProvidedByUsedInOperatingActivities", "MR-0016", 1.0, "q"),
+        ],
+    )
+    return con
+
+
+def test_restatement_history_returns_only_the_requested_period_length(tmp_path):
+    """period_end alone does not identify a figure: 14,162 (cik, field,
+    period_end) triples in the smoke build span more than one
+    (period_start, period_type). Asking for the 12-month figure must not
+    splice the co-filed 3-month figure into its revision chain — this
+    function is the only place supersession is derived, so whatever it
+    returns is what a consumer believes superseded what."""
+    con = _mixed_lengths(tmp_path)
+    hist = restatement_history(
+        con, 1855631, "operating_cash_flow", date(2022, 12, 31),
+        period_start=date(2022, 1, 1), period_type="duration", unit="USD")
+    assert [h.value for h in hist] == [-16865274.0, -16900000.0]
+    assert all(h.period_start == date(2022, 1, 1) for h in hist)
+    assert -200.0 not in [h.value for h in hist]
+
+
+def test_restatement_history_returns_the_short_period_when_asked(tmp_path):
+    """The 3-month figure is still reachable — it is a figure in its own
+    right, not noise to be filtered away."""
+    con = _mixed_lengths(tmp_path)
+    hist = restatement_history(
+        con, 1855631, "operating_cash_flow", date(2022, 12, 31),
+        period_start=date(2022, 10, 1), period_type="duration", unit="USD")
+    assert [h.value for h in hist] == [-200.0]
+
+
+def test_restatement_history_separates_units(tmp_path):
+    """Two currencies for one figure are two chains, not one."""
+    con = connect(tmp_path / "t.duckdb")
+    create_fact_table(con)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("n1", 5, "total_assets", 205617546.0, "USD", "instant",
+             None, date(2023, 12, 31), "2023", "FY",
+             date(2024, 3, 15), "acc-1", "Assets", "MR-0012", 1.0, "q"),
+            ("n2", 5, "total_assets", 1310318375.0, "CNY", "instant",
+             None, date(2023, 12, 31), "2023", "FY",
+             date(2024, 3, 15), "acc-1", "Assets", "MR-0012", 1.0, "q"),
+        ],
+    )
+    usd = restatement_history(con, 5, "total_assets", date(2023, 12, 31),
+                              period_start=None, period_type="instant",
+                              unit="USD")
+    assert [h.value for h in usd] == [205617546.0]
+    cny = restatement_history(con, 5, "total_assets", date(2023, 12, 31),
+                              period_start=None, period_type="instant",
+                              unit="CNY")
+    assert [h.value for h in cny] == [1310318375.0]
