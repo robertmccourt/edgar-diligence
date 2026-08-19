@@ -53,6 +53,13 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
     exactly one net_income fact, from NetIncomeLoss, which is what the
     MR-0011 rationale ("used when NetIncomeLoss absent") has always claimed.
 
+    The same priority mechanism decides net_income, stockholders_equity, and
+    capex whenever a filing reports both a parent-only figure and a
+    noncontrolling-interest-inclusive or broader variant: the higher-priority
+    (parent-only / narrower) tag wins and the losing tag's value is not
+    stored anywhere in the database — not as a fact, not elsewhere. This is
+    the intended convention, not a gap.
+
     This is the structural tier of resolution and uses only `num.txt`. The
     richer refinement — preferring the tag presented in the primary
     statement per `pre.txt` — is deliberately not attempted here.
