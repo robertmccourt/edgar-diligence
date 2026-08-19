@@ -1,7 +1,7 @@
 import duckdb
 
 # A "figure" is one (cik, canonical_field, period_start, period_end,
-# period_type) key. It is restated when two filings report materially
+# period_type, unit) key. It is restated when two filings report materially
 # different values for it.
 #
 # period_start is load-bearing, not decoration. Every 10-Q reports a
@@ -10,30 +10,35 @@ import duckdb
 # distinct quantities are mistaken for versions of one another and their
 # difference is reported as a restatement — which is what produced a 54.2%
 # median absolute change and a 49,999,630% maximum against real filings.
+#
+# `unit` is load-bearing for the same reason. 1,300 figure keys in the
+# 2024 Q1-Q2 smoke build span more than one unit: a filer reporting the
+# same line in USD and CNY is not restating it, and scoring the exchange
+# rate as a restatement inflates both the rate and the median change.
 _VERSIONS = """
 WITH ordered AS (
     SELECT cik, canonical_field, period_start, period_end, period_type,
-           value, filed_date,
+           unit, value, filed_date,
            first_value(value) OVER (
                PARTITION BY cik, canonical_field, period_start, period_end,
-                            period_type
+                            period_type, unit
                ORDER BY filed_date
            ) AS first_value,
            count(*) OVER (
                PARTITION BY cik, canonical_field, period_start, period_end,
-                            period_type
+                            period_type, unit
            ) AS n_versions
     FROM fact
 ),
 figures AS (
     SELECT cik, canonical_field, period_start, period_end, period_type,
-           any_value(first_value) AS original,
+           unit, any_value(first_value) AS original,
            max(n_versions) AS n_versions,
            max(CASE WHEN first_value <> 0
                     THEN abs(value - first_value) / abs(first_value) * 100
                     ELSE 0 END) AS abs_pct_change
     FROM ordered
-    GROUP BY cik, canonical_field, period_start, period_end, period_type
+    GROUP BY cik, canonical_field, period_start, period_end, period_type, unit
 )
 """
 
@@ -64,7 +69,7 @@ def restatement_detail(
     return con.execute(
         _VERSIONS + """
         SELECT cik, canonical_field, period_start, period_end, original,
-               n_versions, abs_pct_change
+               n_versions, abs_pct_change, unit
         FROM figures
         WHERE abs_pct_change >= ? AND abs_pct_change > 0.0001
         ORDER BY abs_pct_change DESC

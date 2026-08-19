@@ -142,3 +142,18 @@ def test_conflicting_tags_for_same_period_length_are_still_ambiguous(tmp_path):
           "MR-0005",1.0,"2024q1")])
     m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
     assert m["net_income"] == FieldStatus.AMBIGUOUS
+
+
+def test_two_currencies_are_not_ambiguous(tmp_path):
+    """A filer reporting the same line in USD and CNY has reported two
+    figures whose values differ by the exchange rate. That is a reporting
+    convention, not two mapped tags disagreeing, and must not be flagged
+    AMBIGUOUS. Modelled on cik=1296774."""
+    con = _db(tmp_path)
+    con.execute("""INSERT INTO fact VALUES
+        ('f1',1,'total_assets',205617546.0,'USD','instant',NULL,'2023-12-31',
+         '2023','FY','2024-02-15','a1','Assets','MR-0012',1.0,'2024q1'),
+        ('f2',1,'total_assets',1310318375.0,'CNY','instant',NULL,'2023-12-31',
+         '2023','FY','2024-02-15','a1','Assets','MR-0012',1.0,'2024q1')""")
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["total_assets"] == FieldStatus.AVAILABLE

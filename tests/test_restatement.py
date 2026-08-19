@@ -200,3 +200,26 @@ def test_filing_lag_ignores_prior_year_comparatives_in_fact(tmp_path):
     lag = filing_lag_stats(con)
     assert lag["n"] == 1
     assert lag["median_days"] == 45
+
+
+def _fu(fid, cik, field, val, unit, ps, pe, filed, acc=None):
+    """A fact carrying an explicit unit, so currency matters."""
+    return (fid, cik, field, val, unit, "duration",
+            ps, pe, "2023", "Q1", filed, acc or f"acc-{fid}", "Revenues",
+            "MR-0003", 1.0, "q")
+
+
+def test_two_currencies_are_not_a_restatement(tmp_path):
+    """The same figure filed in USD and CNY differs by the exchange rate,
+    not by a correction. Keyed without `unit` the pair is scored as a
+    restatement of ~537%. Modelled on cik=1296774, total_assets."""
+    con = _db(tmp_path, [
+        _fu("a", 1, "total_assets", 205617546.0, "USD", None,
+            date(2023, 12, 31), date(2024, 3, 15), acc="acc-1"),
+        _fu("b", 1, "total_assets", 1310318375.0, "CNY", None,
+            date(2023, 12, 31), date(2024, 3, 15), acc="acc-1"),
+    ])
+    s = restatement_stats(con)
+    assert s["total_figures"] == 2      # two figures, not one
+    assert s["restated_figures"] == 0
+    assert s["max_abs_pct_change"] == 0.0

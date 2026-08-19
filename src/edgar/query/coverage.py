@@ -79,12 +79,18 @@ def coverage_map(
     # the same day, from the same tag, with legitimately different values.
     # Grouping on period_end alone would flag the ordinary shape of a
     # quarterly report as an unresolvable conflict.
+    #
+    # `unit` is part of that identity too. A filer reporting the same line
+    # in USD and CNY has reported two figures whose values legitimately
+    # differ by the exchange rate; that is a reporting convention, not an
+    # unresolvable conflict, and must not be flagged as one.
     ambiguous = {
         r[0] for r in con.execute(
             """
             SELECT canonical_field FROM fact
             WHERE cik = ? AND period_end = ? AND filed_date <= ?
-            GROUP BY canonical_field, period_start, period_type, filed_date
+            GROUP BY canonical_field, period_start, period_type, unit,
+                     filed_date
             HAVING count(DISTINCT value) > 1
             """,
             [cik, period_end, as_of],

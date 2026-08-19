@@ -37,13 +37,24 @@ def get_facts_asof(
     """Return the value that was knowable on `as_of`.
 
     A figure is identified by (canonical_field, period_start, period_end,
-    period_type) — never by period_end alone. Every 10-Q reports a
+    period_type, unit) — never by period_end alone. Every 10-Q reports a
     three-month and a year-to-date figure that end on the same day, and a
     10-K adds annual and comparative figures; those are distinct economic
     quantities of different lengths, not versions of one another. For each
     such figure the row with the greatest filed_date not later than as_of
     wins. Rows filed after as_of are invisible — this is the point-in-time
     guarantee.
+
+    `unit` is part of that identity. Filers report the same balance-sheet
+    line in more than one currency: 1,300 figure keys in the 2024 Q1-Q2
+    smoke build span more than one unit, and cik 1296774 filed total_assets
+    as both USD 205,617,546 and CNY 1,310,318,375 for the same date in the
+    same accession. Without unit in the partition those two compete for
+    rank 1 and the query returns whichever the tiebreak happens to pick —
+    a 6.4x error handed to the caller under a valid fact_id. The same
+    figure in two currencies is two figures; both stay independently
+    queryable. No conversion or currency preference is applied here: that
+    is a decision for the consumer, who can see both.
 
     `period_start` and `period_end` bound the fact's `period_end` column
     only — `period_start` is never compared against the `period_start`
@@ -61,8 +72,9 @@ def get_facts_asof(
             SELECT {_COLUMNS},
                    row_number() OVER (
                        PARTITION BY canonical_field, period_start,
-                                    period_end, period_type
-                       ORDER BY filed_date DESC, accession DESC
+                                    period_end, period_type, unit
+                       ORDER BY filed_date DESC, accession DESC,
+                                fact_id DESC
                    ) AS rn
             FROM fact
             WHERE cik = ?
@@ -70,7 +82,7 @@ def get_facts_asof(
               AND period_end BETWEEN ? AND ?
               AND filed_date <= ?
         ) WHERE rn = 1
-        ORDER BY canonical_field, period_end, period_start
+        ORDER BY canonical_field, period_end, period_start, unit
         """,
         [cik, *fields, period_start, period_end, as_of],
     ).fetchall()
