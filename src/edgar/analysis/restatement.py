@@ -74,18 +74,36 @@ def restatement_detail(
 
 
 def filing_lag_stats(con: duckdb.DuckDBPyConnection) -> dict:
+    """How long after its period ended did each filing reach the SEC?
+
+    Measured on `raw_sub`, which holds one row per filing carrying both the
+    period it covers and the date it was filed. This is deliberately not
+    measured on `fact`: a single 10-K also restates the prior year, so a
+    report filed 45 days after its own year end contributes a ~410-day lag
+    for the comparative period it happens to mention. Measuring per filing
+    asks the question the metric is named for.
+
+    Restricted to 10-K and 10-Q — the periodic reports whose deadlines the
+    lag is meaningfully compared against. Amendments (10-K/A, 10-Q/A) are
+    excluded: they are corrections filed long after the fact and describe
+    how late a correction was, not how promptly the company reported.
+
+    `raw_sub.period` is blank for some filers; those rows carry no period to
+    measure from and are dropped rather than folded in as a zero.
+    """
     row = con.execute(
         """
-        WITH first_filing AS (
-            SELECT cik, canonical_field, period_end,
-                   min(filed_date) AS first_filed
-            FROM fact
-            GROUP BY cik, canonical_field, period_end
+        WITH lags AS (
+            SELECT date_diff('day',
+                             try_strptime(trim(period), '%Y%m%d')::DATE,
+                             try_strptime(trim(filed), '%Y%m%d')::DATE
+                    ) AS lag_days
+            FROM raw_sub
+            WHERE form IN ('10-K', '10-Q')
         )
-        SELECT count(*),
-               median(date_diff('day', period_end, first_filed)),
-               quantile_cont(date_diff('day', period_end, first_filed), 0.9)
-        FROM first_filing
+        SELECT count(*), median(lag_days), quantile_cont(lag_days, 0.9)
+        FROM lags
+        WHERE lag_days IS NOT NULL
         """
     ).fetchone()
     return {"n": row[0], "median_days": row[1], "p90_days": row[2]}
