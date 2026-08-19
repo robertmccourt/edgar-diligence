@@ -177,7 +177,7 @@ QUALIFY ROW_NUMBER() OVER (
   -- the same day; a filer may report the same figure in two currencies.
   PARTITION BY f.cik, f.canonical_field, f.period_start,
                f.period_end, f.period_type, f.unit
-  ORDER BY f.filed_date DESC, f.accession DESC
+  ORDER BY f.filed_date DESC, f.accession DESC, f.fact_id DESC
 ) = 1;
 ```
 
