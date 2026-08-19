@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/robertmccourt/Desktop/EY/edgar-diligence/src/edgar/pipeline.py", line 48, in <module>
+    report = build_all(
+        con,
+    ...<2 lines>...
+        s.raw_dir,
+    )
+  File "/Users/robertmccourt/Desktop/EY/edgar-diligence/src/edgar/pipeline.py", line 28, in build_all
+    n_facts = build_facts(con)
+  File "/Users/robertmccourt/Desktop/EY/edgar-diligence/src/edgar/curate/facts.py", line 142, in build_facts
+        make_fact_id(adsh, tag, ddate, qtrs, uom, coreg),
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ...<3 lines>...
+    ))
+    ^
+_duckdb.TransactionException: TransactionContext Error: Failed to commit: Could not write file "/Users/robertmccourt/Desktop/EY/edgar-diligence/data/edgar.duckdb.wal": No space left on device

@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 from edgar.db import connect, init_schema
 from edgar.ingest.archives import Quarter, enumerate_quarters, download_archive
@@ -21,8 +22,16 @@ def build_all(con, start: Quarter, end: Quarter, raw_dir: Path) -> dict:
 
     for q in enumerate_quarters(start, end):
         zip_path = download_archive(q, raw_dir)
-        files = extract_archive(zip_path, raw_dir / q.label)
-        load_quarter(con, files, q)
+        extract_dir = raw_dir / q.label
+        try:
+            files = extract_archive(zip_path, extract_dir)
+            load_quarter(con, files, q)
+        finally:
+            # The extracted text files are ~500MB per quarter and are fully
+            # regenerable from the cached .zip. Keeping all of them would add
+            # ~12GB across the 2019-2026 range and has already exhausted the
+            # disk on one full build. Remove each quarter's once it is loaded.
+            shutil.rmtree(extract_dir, ignore_errors=True)
 
     n_companies = build_company_table(con)
     n_facts = build_facts(con)
