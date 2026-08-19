@@ -73,13 +73,18 @@ def coverage_map(
         ).fetchall()
     }
     # Two mapped tags claiming the same canonical field with different values
-    # in the same filing cannot be silently resolved (spec §4.6 AMBIGUOUS).
+    # for the same figure in the same filing cannot be silently resolved
+    # (spec §4.6 AMBIGUOUS). period_start is part of the figure's identity:
+    # every 10-Q files a three-month and a year-to-date figure that end on
+    # the same day, from the same tag, with legitimately different values.
+    # Grouping on period_end alone would flag the ordinary shape of a
+    # quarterly report as an unresolvable conflict.
     ambiguous = {
         r[0] for r in con.execute(
             """
             SELECT canonical_field FROM fact
             WHERE cik = ? AND period_end = ? AND filed_date <= ?
-            GROUP BY canonical_field, period_type, filed_date
+            GROUP BY canonical_field, period_start, period_type, filed_date
             HAVING count(DISTINCT value) > 1
             """,
             [cik, period_end, as_of],

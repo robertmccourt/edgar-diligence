@@ -102,3 +102,43 @@ def test_unmapped_tag_from_a_different_period_does_not_leak_in(tmp_path):
         ('a0','AcmeCostOfProductRevenue','acme/2022','','20221231','4','USD','55','','','2023q1')""")
     m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
     assert m["cost_of_revenue"] == FieldStatus.NOT_DISCLOSED
+
+
+def test_quarterly_and_ytd_filed_same_day_are_not_ambiguous(tmp_path):
+    """AMBIGUOUS means two mapped tags claim the same canonical field with
+    irreconcilable values for the same figure. A three-month figure and the
+    year-to-date figure ending the same day are not the same figure — every
+    10-Q files both, from the same tag, on the same day, with legitimately
+    different values. Without period_start in the grouping key this fires on
+    the ordinary shape of a quarterly report."""
+    con = _db(tmp_path)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("f1",1,"net_income",-840746.0,"USD","duration",date(2023,10,1),
+          date(2023,12,31),"2023","Q4",date(2024,2,15),"a1","NetIncomeLoss",
+          "MR-0005",1.0,"2024q1"),
+         ("f2",1,"net_income",-1728362.0,"USD","duration",date(2023,1,1),
+          date(2023,12,31),"2023","FY",date(2024,2,15),"a1","NetIncomeLoss",
+          "MR-0005",1.0,"2024q1")])
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["net_income"] == FieldStatus.AVAILABLE
+
+
+def test_conflicting_tags_for_same_period_length_are_still_ambiguous(tmp_path):
+    """The genuine case must survive: same period_start and period_end, same
+    filing, two mapped tags, two values."""
+    con = _db(tmp_path)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("f1",1,"net_income",-840746.0,"USD","duration",date(2023,1,1),
+          date(2023,12,31),"2023","FY",date(2024,2,15),"a1","NetIncomeLoss",
+          "MR-0005",1.0,"2024q1"),
+         ("f2",1,"net_income",-999999.0,"USD","duration",date(2023,1,1),
+          date(2023,12,31),"2023","FY",date(2024,2,15),"a1","ProfitLoss",
+          "MR-0006",1.0,"2024q1"),
+         # a co-filed quarterly figure must not mask the real conflict
+         ("f3",1,"net_income",-100000.0,"USD","duration",date(2023,10,1),
+          date(2023,12,31),"2023","Q4",date(2024,2,15),"a1","NetIncomeLoss",
+          "MR-0005",1.0,"2024q1")])
+    m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
+    assert m["net_income"] == FieldStatus.AMBIGUOUS
