@@ -40,6 +40,14 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
     Only the highest-priority rule for each tag is applied. Rows whose tag
     has no rule are skipped — they are the mapping tail, surfaced by the
     coverage report rather than silently dropped.
+
+    Rows whose filing date precedes the end of the period they describe are
+    dropped as impossible: a company cannot report actuals for a period that
+    has not ended. (Observed in the source data as e.g. a balance sheet dated
+    2024-12-31 filed 2024-05-07.) Admitting them would make the
+    filed_after_period quality check unsatisfiable at its 0.0 threshold, and
+    relaxing that threshold to tolerate contradictory dates would forfeit the
+    only guard the as-of query has against a corrupted timeline.
     """
     rows = con.execute(
         """
@@ -65,7 +73,8 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
     ).fetchall()
 
     payload = []
-    skipped = 0
+    malformed = 0
+    impossible = 0
     for (adsh, tag, ddate, qtrs, uom, coreg, value, cik, filed, fy, fp,
          src_q, field, sign, scale, rule_id, conf) in rows:
         try:
@@ -73,7 +82,10 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
             numeric = float(value) * sign * scale
             filed_date = parse_yyyymmdd(filed)
         except (ValueError, TypeError):
-            skipped += 1
+            malformed += 1
+            continue
+        if filed_date < period.end:
+            impossible += 1
             continue
         payload.append((
             make_fact_id(adsh, tag, ddate, qtrs, uom, coreg),
@@ -97,9 +109,11 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
             f"{persisted} persisted, {attempted - persisted} dropped by "
             f"fact_id collision"
         )
+    skipped = malformed + impossible
     if skipped:
         print(
             f"WARNING: build_facts: {skipped} of {len(rows)} rows skipped "
-            f"(malformed ddate, qtrs, value, or filed)"
+            f"({malformed} malformed ddate, qtrs, value, or filed; "
+            f"{impossible} filed before the period they describe ended)"
         )
     return persisted

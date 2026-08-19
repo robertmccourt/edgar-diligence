@@ -151,3 +151,60 @@ def test_malformed_filed_skipped_with_warning(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "WARNING" in out
     assert "1" in out  # one row skipped
+
+
+def test_fact_filed_before_period_end_is_skipped(tmp_path, capsys):
+    """A company cannot report actuals for a period that has not ended yet.
+    Real example from the smoke run: a balance sheet dated 2024-12-31 filed
+    2024-05-07. These are source-data errors, so they are dropped at build
+    time — the filed_after_period quality check keeps a 0.0 threshold that
+    means something rather than being relaxed to tolerate violations.
+    """
+    con = connect(tmp_path / "t.duckdb"); _seed(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a4','320193','APPLE','3571','0930','10-Q','20241231','2025','Q1','20240507','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a4','Assets','us-gaap/2024','','20241231','0','USD','400000000000','','','2024q3')""")
+    create_fact_table(con)
+    n = build_facts(con)
+    assert n == 2  # the two good facts from _seed still load
+    assert con.execute(
+        "SELECT count(*) FROM fact WHERE filed_date < period_end"
+    ).fetchone()[0] == 0
+    assert con.execute(
+        "SELECT count(*) FROM fact WHERE accession = 'a4'").fetchone()[0] == 0
+    fields = {r[0] for r in con.execute(
+        "SELECT canonical_field FROM fact").fetchall()}
+    assert fields == {"revenue", "total_assets"}
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "1 of 3 rows skipped" in out
+
+
+def test_fact_filed_on_period_end_is_kept(tmp_path):
+    """Filing on the closing day itself is unusual but not impossible; only
+    filed_date strictly before period_end is contradictory."""
+    con = connect(tmp_path / "t.duckdb")
+    init_schema(con); create_mapping_table(con); seed_mapping_rules(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a5','320193','APPLE','3571','0930','10-Q','20240630','2024','Q3','20240630','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a5','Assets','us-gaap/2024','','20240630','0','USD','331612000000','','','2024q3')""")
+    create_fact_table(con)
+    assert build_facts(con) == 1
+
+
+def test_skipped_warning_separates_malformed_from_impossible(tmp_path, capsys):
+    con = connect(tmp_path / "t.duckdb"); _seed(con)
+    con.execute("""INSERT INTO raw_sub VALUES
+        ('a4','320193','APPLE','3571','0930','10-Q','20241231','2025','Q1','20240507','0','1','1','2024q3'),
+        ('a6','320193','APPLE','3571','0930','10-Q','20240930','2024','Q4','20241101','0','1','1','2024q3')""")
+    con.execute("""INSERT INTO raw_num VALUES
+        ('a4','Assets','us-gaap/2024','','20241231','0','USD','400000000000','','','2024q3'),
+        ('a6','Revenues','us-gaap/2024','','20240930','1','USD','not_a_number','','','2024q3')""")
+    create_fact_table(con)
+    assert build_facts(con) == 2
+    out = capsys.readouterr().out
+    assert "2 of 4 rows skipped" in out
+    assert "1 malformed" in out
+    assert "1 filed before" in out
