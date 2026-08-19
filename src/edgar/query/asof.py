@@ -36,9 +36,14 @@ def get_facts_asof(
 ) -> list[AsOfFact]:
     """Return the value that was knowable on `as_of`.
 
-    For each (field, period) the row with the greatest filed_date not later
-    than as_of wins. Rows filed after as_of are invisible — this is the
-    point-in-time guarantee.
+    A figure is identified by (canonical_field, period_start, period_end,
+    period_type) — never by period_end alone. Every 10-Q reports a
+    three-month and a year-to-date figure that end on the same day, and a
+    10-K adds annual and comparative figures; those are distinct economic
+    quantities of different lengths, not versions of one another. For each
+    such figure the row with the greatest filed_date not later than as_of
+    wins. Rows filed after as_of are invisible — this is the point-in-time
+    guarantee.
 
     `period_start` and `period_end` bound the fact's `period_end` column
     only — `period_start` is never compared against the `period_start`
@@ -55,7 +60,8 @@ def get_facts_asof(
         SELECT {_COLUMNS} FROM (
             SELECT {_COLUMNS},
                    row_number() OVER (
-                       PARTITION BY canonical_field, period_end, period_type
+                       PARTITION BY canonical_field, period_start,
+                                    period_end, period_type
                        ORDER BY filed_date DESC, accession DESC
                    ) AS rn
             FROM fact
@@ -64,7 +70,7 @@ def get_facts_asof(
               AND period_end BETWEEN ? AND ?
               AND filed_date <= ?
         ) WHERE rn = 1
-        ORDER BY canonical_field, period_end
+        ORDER BY canonical_field, period_end, period_start
         """,
         [cik, *fields, period_start, period_end, as_of],
     ).fetchall()

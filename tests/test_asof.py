@@ -90,3 +90,69 @@ def test_multiple_fields_returns_rows_for_each(tmp_path):
                          date(2023, 12, 31), date(2023, 9, 1))
     assert {g.canonical_field for g in got} == {"revenue", "opex"}
     assert len(got) == 2
+
+
+def test_overlapping_period_lengths_are_all_returned(tmp_path):
+    """A 10-Q reports a 3-month and a year-to-date figure that END on the
+    same day; a 10-K adds the annual figure. These are three distinct
+    economic quantities, not three versions of one. If `period_start` were
+    dropped from the window's PARTITION BY they would compete for rank 1
+    and two of the three would be silently discarded.
+
+    Modelled on real data: cik=1536089, net_income, all ending 2023-03-31,
+    carrying 12-month, 6-month and 3-month figures at once.
+    """
+    con = connect(tmp_path / "t.duckdb")
+    create_fact_table(con)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            # 12-month, filed with the 10-K
+            ("g1", 9, "net_income", -1728362.0, "USD", "duration",
+             date(2022, 4, 1), date(2023, 3, 31), "2023", "FY",
+             date(2024, 4, 16), "acc-k", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+            # 6-month, same filing
+            ("g2", 9, "net_income", -1728362.0, "USD", "duration",
+             date(2022, 10, 1), date(2023, 3, 31), "2023", "Q2",
+             date(2024, 4, 16), "acc-k", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+            # 3-month, filed later in a 10-Q
+            ("g3", 9, "net_income", -840746.0, "USD", "duration",
+             date(2023, 1, 1), date(2023, 3, 31), "2023", "Q1",
+             date(2024, 6, 7), "acc-q", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+        ],
+    )
+    got = get_facts_asof(con, 9, ["net_income"], date(2023, 1, 1),
+                         date(2023, 12, 31), date(2024, 12, 31))
+    assert len(got) == 3
+    assert {g.period_start for g in got} == {
+        date(2022, 4, 1), date(2022, 10, 1), date(2023, 1, 1)}
+    assert {g.value for g in got} == {-1728362.0, -840746.0}
+
+
+def test_restatement_within_one_period_length_still_collapses(tmp_path):
+    """Adding period_start must not defeat the point-in-time rule: two
+    filings of the *same* start/end pair are still versions of one figure,
+    and only the latest visible one is returned."""
+    con = connect(tmp_path / "t.duckdb")
+    create_fact_table(con)
+    con.executemany(
+        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            ("h1", 9, "net_income", -840746.0, "USD", "duration",
+             date(2023, 1, 1), date(2023, 3, 31), "2023", "Q1",
+             date(2024, 4, 16), "acc-a", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+            ("h2", 9, "net_income", -900000.0, "USD", "duration",
+             date(2023, 1, 1), date(2023, 3, 31), "2023", "Q1",
+             date(2024, 6, 7), "acc-b", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+            ("h3", 9, "net_income", -1728362.0, "USD", "duration",
+             date(2022, 10, 1), date(2023, 3, 31), "2023", "Q2",
+             date(2024, 6, 7), "acc-b", "NetIncomeLoss", "MR-0005", 1.0, "q"),
+        ],
+    )
+    got = get_facts_asof(con, 9, ["net_income"], date(2023, 1, 1),
+                         date(2023, 12, 31), date(2024, 12, 31))
+    assert len(got) == 2
+    by_start = {g.period_start: g for g in got}
+    assert by_start[date(2023, 1, 1)].value == -900000.0
+    assert by_start[date(2023, 1, 1)].accession == "acc-b"
+    assert by_start[date(2022, 10, 1)].value == -1728362.0
