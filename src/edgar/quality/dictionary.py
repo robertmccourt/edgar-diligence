@@ -36,6 +36,22 @@ FIELD_DEFINITIONS: dict[str, str] = {
              "PaymentsToAcquireProductiveAssets, the higher-priority tag "
              "(PaymentsToAcquirePropertyPlantAndEquipment) wins and the "
              "broader variant is not stored.",
+    "inventory": "Net inventory held at the balance sheet date. Instant fact.",
+    "accounts_receivable": "Amounts owed by customers, net, current. "
+                           "Instant fact. Broader ReceivablesNetCurrent is "
+                           "used when the trade-specific tag is absent.",
+    "accounts_payable": "Amounts owed to suppliers, current. Instant fact. "
+                        "The combined payables+accrued-liabilities tag is "
+                        "deliberately not mapped (would overstate).",
+    "long_term_debt": "Long-term borrowings. Instant fact. Named "
+                      "long_term_debt, not total_debt: short-term borrowings "
+                      "are excluded by construction, and when only "
+                      "LongTermDebtNoncurrent is filed the current portion "
+                      "is excluded too. See mapping rationale MR-0025.",
+    "cash_and_equivalents": "Unrestricted cash and cash equivalents. Instant "
+                            "fact. Fallback tags may include restricted cash "
+                            "(overstates) or exclude equivalents "
+                            "(understates); see MR-0029/MR-0030.",
 }
 
 _TABLES = ("fact", "company", "mapping_rule")

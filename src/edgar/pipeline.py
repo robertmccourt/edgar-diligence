@@ -49,6 +49,28 @@ def build_all(con, start: Quarter, end: Quarter, raw_dir: Path) -> dict:
     }
 
 
+def rebuild_curated(con) -> dict:
+    """Rebuild the curated zone from an already-loaded raw zone.
+
+    For mapping-rule changes: full fact rebuild without re-downloading or
+    re-loading 29 quarters of archives. Deletes fact rows first so facts
+    from removed rules cannot linger (build_facts alone only ever adds).
+    """
+    create_mapping_table(con)
+    seed_mapping_rules(con)
+    create_fact_table(con)
+    con.execute("DELETE FROM fact")
+    n_facts = build_facts(con)
+    n_companies = build_company_table(con)
+    return {
+        "companies": n_companies,
+        "facts": n_facts,
+        "coverage": mapping_coverage(con),
+        "eligibility": apply_eligibility(con),
+        "quality": [r.__dict__ for r in run_quality_checks(con)],
+    }
+
+
 if __name__ == "__main__":
     import json
     from edgar.config import get_settings

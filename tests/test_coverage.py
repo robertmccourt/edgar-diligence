@@ -61,7 +61,7 @@ def test_conflicting_tags_for_same_field_are_ambiguous(tmp_path):
 def test_every_canonical_field_gets_a_status(tmp_path):
     con = _db(tmp_path)
     m = coverage_map(con, 1, date(2023, 12, 31), date(2024, 6, 1))
-    assert len(m) == 10
+    assert len(m) == 15
 
 def test_component_asset_tag_alone_is_not_disclosed_not_unmapped(tmp_path):
     con = _db(tmp_path)

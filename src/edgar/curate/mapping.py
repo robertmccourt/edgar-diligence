@@ -5,6 +5,8 @@ CANONICAL_FIELDS: tuple[str, ...] = (
     "revenue", "cost_of_revenue", "gross_profit", "operating_income",
     "net_income", "total_assets", "total_liabilities",
     "stockholders_equity", "operating_cash_flow", "capex",
+    "inventory", "accounts_receivable", "accounts_payable",
+    "long_term_debt", "cash_and_equivalents",
 )
 
 
@@ -64,6 +66,40 @@ SEED_RULES: tuple[MappingRule, ...] = (
         "Capex reported as a positive payment (outflow); normalized positive."),
     _r(19, "PaymentsToAcquireProductiveAssets", "capex", 2,
         "Broader productive-asset purchases."),
+    _r(20, "InventoryNet", "inventory", 1,
+       "Net inventory at the balance sheet date; the dominant aggregate tag "
+       "(4,123 of 11,119 ciks, 2019-2026 store)."),
+    _r(21, "AccountsReceivableNetCurrent", "accounts_receivable", 1,
+       "Net current trade receivables; dominant tag (5,476 ciks)."),
+    _r(22, "ReceivablesNetCurrent", "accounts_receivable", 2,
+       "Broader current receivables aggregate (incl. notes); used when the "
+       "trade-specific tag is absent (842 ciks)."),
+    _r(23, "AccountsPayableCurrent", "accounts_payable", 1,
+       "Current accounts payable; dominant tag (6,116 ciks). The combined "
+       "AccountsPayableAndAccruedLiabilitiesCurrent tag is deliberately NOT "
+       "mapped: it conflates payables with accrued liabilities and would "
+       "corrupt days-payable arithmetic."),
+    _r(24, "AccountsPayableTradeCurrent", "accounts_payable", 2,
+       "Trade-only payables; narrower, used when the aggregate is absent."),
+    _r(25, "LongTermDebt", "long_term_debt", 1,
+       "Total long-term debt including current maturities. Field is named "
+       "long_term_debt, not total_debt: no single GAAP tag expresses "
+       "ST+LT total debt for more than a few hundred filers; short-term "
+       "borrowings are excluded by construction."),
+    _r(26, "LongTermDebtAndCapitalLeaseObligations", "long_term_debt", 2,
+       "Broader: includes finance-lease obligations; used when the pure "
+       "debt total is absent."),
+    _r(27, "LongTermDebtNoncurrent", "long_term_debt", 3,
+       "Noncurrent portion only (3,097 ciks — the most common form). "
+       "Understates by current maturities when the total tags are absent."),
+    _r(28, "CashAndCashEquivalentsAtCarryingValue", "cash_and_equivalents", 1,
+       "Unrestricted cash and equivalents; dominant tag (9,117 ciks)."),
+    _r(29, "CashCashEquivalentsRestrictedCashAndRestrictedCashEquivalents",
+        "cash_and_equivalents", 2,
+        "Cash-flow-statement reconciliation total; overstates by restricted "
+        "cash when the unrestricted tag is absent."),
+    _r(30, "Cash", "cash_and_equivalents", 3,
+       "Bare cash; understates by excluding equivalents. Legacy filers."),
 )
 
 _BY_TAG: dict[str, list[MappingRule]] = {}

@@ -43,6 +43,12 @@ _CONCEPT_HINTS: dict[str, tuple[str, ...]] = {
     "operating_cash_flow": ("operatingactivities",),
     "capex": ("propertyplantandequipment", "capitalexpenditure",
               "productiveassets"),
+    "inventory": ("inventory",),
+    "accounts_receivable": ("accountsreceivable", "receivablesnet"),
+    "accounts_payable": ("accountspayable",),
+    "long_term_debt": ("longtermdebt", "notespayable", "borrowings",
+                       "seniornotes"),
+    "cash_and_equivalents": ("cashandcashequivalents", "cashcashequivalents"),
 }
 
 _CONCEPT_EXACT_HINTS: dict[str, frozenset[str]] = {

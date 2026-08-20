@@ -1,4 +1,4 @@
-.PHONY: install test build clean
+.PHONY: install test build clean rebuild-curated
 
 install:
 	pip install -e ".[dev]"
@@ -8,6 +8,9 @@ test:
 
 build:
 	python -m edgar.pipeline
+
+rebuild-curated:
+	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.pipeline import rebuild_curated; import json; print(json.dumps(rebuild_curated(connect(get_settings().duckdb_path)), indent=2, default=str))"
 
 clean:
 	rm -rf data/edgar.duckdb

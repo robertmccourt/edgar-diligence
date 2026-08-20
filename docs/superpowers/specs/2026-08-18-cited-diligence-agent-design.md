@@ -346,7 +346,7 @@ Procedural memory is **files on disk, version-controlled** — not a table. That
 | `inventory` | instant | Added rev 3 — required by §7.7 memo section 6 |
 | `accounts_receivable` | instant | Added rev 3 — required by §7.7 memo section 6 |
 | `accounts_payable` | instant | Added rev 3 — required by §7.7 memo section 6 |
-| `total_debt` | instant | Added rev 3 — `total_liabilities` conflates borrowing with operating obligations |
+| `long_term_debt` | instant | Added rev 3 — `total_liabilities` conflates borrowing with operating obligations. Named `long_term_debt` not `total_debt`: measured against the full store, no single GAAP tag expresses ST+LT total debt for >9% of filers (LongTermDebt: 1.031k, DebtLongtermAndShorttermCombinedAmount: 76 of 11,119 ciks). |
 | `cash_and_equivalents` | instant | Added rev 3 — required for net debt in §7.7 memo section 7 |
 
 **Fifteen fields, not ten (rev 3).** The original ten cannot support memo sections 6 (working capital) or 7 (leverage): none of inventory, receivables or payables was mapped, and `total_liabilities` alone cannot separate debt from routine operating obligations. The five additions are core balance-sheet lines with well-standardised GAAP tags — the easy end of the mapping problem, not the ~94k-tag tail. Same `MappingRule` machinery, additional seed rules.
@@ -902,7 +902,7 @@ The semantic tier and consolidation agent were the costly parts — embedding st
 
 **2. Canonical schema expanded from 10 fields to 15.** §4.4, new task 2.0.
 
-Verified against the built database: memo section 6 had *zero* of its three required fields mapped, and section 7 had only `total_liabilities`. Added `inventory`, `accounts_receivable`, `accounts_payable`, `total_debt`, `cash_and_equivalents` — core balance-sheet lines with well-standardised tags, the easy end of the mapping problem rather than the ~94k-tag tail.
+Verified against the built database: memo section 6 had *zero* of its three required fields mapped, and section 7 had only `total_liabilities`. Added `inventory`, `accounts_receivable`, `accounts_payable`, `long_term_debt`, `cash_and_equivalents` — core balance-sheet lines with well-standardised tags, the easy end of the mapping problem rather than the ~94k-tag tail. Note: originally named `total_debt` in the spec; measured against the full store, no single GAAP tag expresses ST+LT total debt for >9% of filers, so the honest field is `long_term_debt` with tiered tags.
 
 **3. Narrative store — build it, library-first.** §4.9, task 2.2.
 
