@@ -1,7 +1,8 @@
 # Design: Point-in-Time SEC Fact Store + Cited Diligence Agent
 
 **Date:** 2026-08-18
-**Status:** Draft for review (rev 2 — adds memory taxonomy, harness, and LLM Ops)
+**Status:** Draft for review (rev 3 — Stage 2 revision: memory reduced to two tiers, canonical schema expanded to 15 fields, narrative store approach settled)
+**Last revised:** 2026-08-19
 **Hard deadline:** first week of September 2026
 **Soft milestone:** Tuesday 2026-08-25
 
@@ -41,11 +42,11 @@ Financial services is blocked on LLM deployment not by capability but by **prova
 ### In
 
 - Bitemporal fact store from SEC DERA quarterly datasets
-- Canonical schema (10 fields) + auditable mapping layer
+- Canonical schema (15 fields) + auditable mapping layer
 - Narrative store (10-K sections) for ~10 companies
 - Tool layer with deterministic computation, as-of enforced in SQL
 - Single-company memo agent on a LangGraph harness, plus multi-turn follow-ups
-- Three-tier memory: procedural, semantic, episodic, with cross-session consolidation
+- Two-tier memory: procedural (versioned files) + dated episodic (DuckDB, SQL retrieval). Semantic tier and consolidation deferred to Stage 3 — see §7.4
 - Output guardrails on the reply path
 - Claim-typed groundedness evaluation with human calibration
 - LLM Ops: per-run tracing, health observation, eval gate, versioned release
@@ -194,6 +195,7 @@ erDiagram
     FACT ||--o{ CLAIM_CITATION : cited_by
     SPAN ||--o{ CLAIM_CITATION : cited_by
     SESSION ||--|{ EPISODIC_MEMORY : records
+    SESSION ||--o{ SESSION_CONCLUSION : yields
     SESSION ||--o{ MEMO : produces
     MEMO ||--|{ CLAIM : contains
     CLAIM ||--o{ CLAIM_CITATION : has
@@ -278,6 +280,14 @@ erDiagram
         blob embedding
         timestamp created_at
     }
+    SESSION_CONCLUSION {
+        string conclusion_id PK
+        string session_id FK
+        int cik FK
+        text conclusion
+        date learned_as_of
+        string trace_id
+    }
     SEMANTIC_MEMORY {
         string sem_id PK
         int cik FK
@@ -333,6 +343,13 @@ Procedural memory is **files on disk, version-controlled** — not a table. That
 | `stockholders_equity` | instant | |
 | `operating_cash_flow` | duration | |
 | `capex` | duration | Sign convention varies — must normalize |
+| `inventory` | instant | Added rev 3 — required by §7.7 memo section 6 |
+| `accounts_receivable` | instant | Added rev 3 — required by §7.7 memo section 6 |
+| `accounts_payable` | instant | Added rev 3 — required by §7.7 memo section 6 |
+| `total_debt` | instant | Added rev 3 — `total_liabilities` conflates borrowing with operating obligations |
+| `cash_and_equivalents` | instant | Added rev 3 — required for net debt in §7.7 memo section 7 |
+
+**Fifteen fields, not ten (rev 3).** The original ten cannot support memo sections 6 (working capital) or 7 (leverage): none of inventory, receivables or payables was mapped, and `total_liabilities` alone cannot separate debt from routine operating obligations. The five additions are core balance-sheet lines with well-standardised GAAP tags — the easy end of the mapping problem, not the ~94k-tag tail. Same `MappingRule` machinery, additional seed rules.
 
 **Period type is enforced.** Duration and instant facts are never mixed in a computation; `compute` rejects it.
 
@@ -460,7 +477,7 @@ Harness: **LangGraph** for the stateful loop and checkpointing, **Pydantic** for
 ```mermaid
 flowchart TD
     START["Input: cik + as_of"]
-    LOADMEM["Load procedural rubric<br/>+ semantic facts for cik<br/>+ recent episodic context"]
+    LOADMEM["Load procedural rubric<br/>+ dated conclusions for cik<br/>(learned_as_of &lt;= as_of)<br/><i>+ semantic facts — Stage 3</i>"]
     ELIG{"Eligible?"}
     COV["list_available_facts"]
     PLAN["Plan sections from coverage"]
@@ -477,7 +494,7 @@ flowchart TD
     FU["Follow-up question"]
     SAVE["Persist session to episodic"]
     CONS{"N sessions since<br/>last consolidation?"}
-    SUM["Summarizer agent (Haiku 4.5)<br/>distill into semantic facts"]
+    SUM["Summarizer agent (Haiku 4.5)<br/>distill into semantic facts<br/><i>Stage 3</i>"]
     STOP["End"]
 
     START --> LOADMEM --> ELIG
@@ -514,17 +531,34 @@ A deterministic check on the reply path, before emission:
 
 Guardrail rejections are logged. Rejection rate is itself a reported metric — it measures how often the raw model would have shipped an uncited claim.
 
-### 7.4 Three-tier persistent memory
+### 7.4 Two-tier persistent memory (revised, rev 3)
 
-| Tier | Contents | Store | Retrieval |
-|---|---|---|---|
-| **Procedural** | How to analyze: memo section rubrics, metric definitions, which metrics apply to which business types, refusal policy | Version-controlled Markdown files | Loaded by section |
-| **Semantic** | Durable facts about a company: fiscal calendar, segment structure, known tag idiosyncrasies, disclosure habits | DuckDB + embeddings | Top-k on cik + query |
-| **Episodic** | Dated events: past sessions, prior conclusions, follow-up threads | DuckDB + embeddings | Relevance (vector) + recency (SQL) |
+| Tier | Contents | Store | Retrieval | Stage |
+|---|---|---|---|---|
+| **Procedural** | How to analyze: memo section rubrics, metric definitions, which metrics apply to which business types, refusal policy | Version-controlled Markdown files | Loaded by section | 2 |
+| **Episodic** | Dated sessions: `cik`, `as_of_date`, `learned_as_of`, conclusions reached, `trace_id` | DuckDB table, **no embeddings** | SQL: filter `cik` + `learned_as_of <= as_of`, order by recency, top N | 2 |
+| ~~Semantic~~ | Durable company facts: fiscal calendar, segment structure, tag idiosyncrasies, disclosure habits | DuckDB + embeddings | Top-k on cik + query | **3** |
 
-**Episodic memory is dated, and that is the whole project.** A conclusion formed under a 2023 cutoff is a different object from one formed under a 2025 cutoff. `SEMANTIC_MEMORY.learned_as_of` and `SESSION.as_of_date` carry that, and memory retrieval respects it: a memo run at as-of date D must not surface a remembered conclusion formed at a later date. **This is a second temporal leakage surface, and the eval tests it.**
+**Why two tiers, not three.** The semantic tier and the consolidation agent (§7.5) are the two costly parts of the original design — an embedding store, retrieval tuning, and a second LLM pipeline — and neither is required by the property that makes memory interesting here. The dated-recall leakage guarantee needs only a `WHERE learned_as_of <= as_of` clause. At ~10 companies and a handful of sessions each, semantic similarity search over episodic rows solves a problem this project does not yet have; exact `cik` match plus recency is sufficient. Deferring them protects the §8.3 human calibration, which is the schedule item least able to absorb slippage.
 
-### 7.5 Consolidation
+**Procedural memory is not additional work.** §9.2 already requires the system prompt and section rubrics to be versioned as part of the config object; storing them as version-controlled Markdown is that requirement, not a second one.
+
+**Episodic memory is dated, and that is the whole project.** A conclusion formed under a 2023 cutoff is a different object from one formed under a 2025 cutoff.
+
+In Stage 2 this is carried by `SESSION_CONCLUSION.learned_as_of`, set to the `as_of_date` of the session that produced the conclusion — a conclusion derived from 2025 information is stamped 2025 regardless of when it was written. Retrieval is a single predicate:
+
+```sql
+select conclusion from session_conclusion
+ where cik = ? and learned_as_of <= ?   -- ? = the current run's as_of
+ order by learned_as_of desc limit ?
+```
+
+A memo run at as-of date D therefore cannot surface a conclusion formed under any later cutoff. **This is a second temporal leakage surface, and the eval tests it.** When the semantic tier lands in Stage 3, `SEMANTIC_MEMORY.learned_as_of` carries the same guarantee for distilled facts.
+
+### 7.5 Consolidation — deferred to Stage 3 (rev 3)
+
+**Not built in Stage 2.** The design below is retained as the Stage 3 target. Its measurable outcome — tokens consumed on the third memo for a company versus the first — remains a Stage 3 success criterion (§15) and is not claimed for the Stage 2 deliverable.
+
 
 Sessions are appended to episodic memory as they complete. **Only after N new sessions** does a summarizer agent — running on `claude-haiku-4-5`, deliberately cheaper than the main agent — distill episodic content into durable semantic facts.
 
@@ -539,6 +573,8 @@ Follow-ups inherit the same `as_of`. They are scored by the same harness, enabli
 Interface is **CLI / notebook**. No web UI.
 
 ### 7.7 Memo template — 11 sections
+
+**Rev 3 note.** Sections 6 (working capital) and 7 (leverage) were unsupported by the original 10-field schema — inventory, receivables and payables were unmapped, and `total_liabilities` conflates borrowing with operating obligations. The five fields added in §4.4 (task 2.0) are what make these two sections producible rather than permanent §11 status codes.
 
 | # | Section | Primary source |
 |---|---|---|
@@ -696,17 +732,23 @@ edgar-diligence/
 ├── config/
 │   └── versions/                 # versioned agent configs (§9.2)
 ├── prompts/                      # procedural memory — rubrics, section specs
-├── src/
-│   ├── ingest/                   # DERA download, unpack, load
-│   ├── bitemporal/               # fact build, as-of views, restatement analysis
-│   ├── mapping/                  # canonical schema, rules, llm_assisted, review CLI
-│   ├── narrative/                # fetch, section split, chunk, index
-│   ├── tools/                    # the five agent tools (Pydantic schemas)
-│   ├── agent/                    # LangGraph loop, ledger, compaction, guardrails
-│   ├── memory/                   # procedural, semantic, episodic, consolidation
-│   ├── eval/                     # decompose, judges, metrics, calibration
-│   ├── ops/                      # tracing, gate, release
-│   └── common/                   # db, config, logging
+├── src/edgar/                    # rev 3: single package, as built in Stage 1
+│   ├── config.py, db.py          # settings, DuckDB connection + raw DDL
+│   ├── pipeline.py               # build_all orchestrator
+│   ├── ingest/                   # DERA download, unpack, load          [built]
+│   ├── curate/                   # fact build, mapping, periods,        [built]
+│   │                             #   company, universe
+│   ├── query/                    # as-of reads, coverage map            [built]
+│   ├── analysis/                 # restatement, filing lag              [built]
+│   ├── quality/                  # checks, coverage stats, dictionary   [built]
+│   ├── narrative/                # fetch, section split, chunk, index   [Stage 2]
+│   ├── tools/                    # the five agent tools (Pydantic)      [Stage 2]
+│   ├── agent/                    # LangGraph loop, ledger, compaction,  [Stage 2]
+│   │                             #   guardrails
+│   ├── memory/                   # procedural loader, episodic store    [Stage 2]
+│   ├── eval/                     # decompose, judges, metrics,          [Stage 2]
+│   │                             #   calibration
+│   └── ops/                      # tracing, gate, release               [Stage 2/3]
 ├── tests/
 ├── notebooks/
 ├── data/                         # gitignored
@@ -740,8 +782,10 @@ The deadline deliverable. One agent, instrumented, with a measured and human-cal
 
 | # | Task | Hours |
 |---|---|---|
+| 2.0 | **Canonical schema expansion — 5 fields** (§4.4): inventory, receivables, payables, total_debt, cash. Seed rules + tests + rebuild. Prerequisite for memo sections 6–7. | 4 |
 | 2.1 | Tool layer, Pydantic schemas, as-of enforced | 6 |
-| 2.2 | Narrative extraction, sectioning, indexing (~10 companies) | 7 |
+| 2.2 | Narrative extraction, sectioning, indexing (~10 companies). **Library-first** — evaluate `edgartools` / `sec-parser` before writing a splitter; verify all ~40 splits by inspection (tractable at this scale); paragraph-chunking fallback retained but not expected. | 7 |
+| 2.2b | **Dated episodic memory** (§7.4): one DuckDB table, SQL retrieval, `learned_as_of <= as_of` enforced; leakage test in the eval | 2 |
 | 2.3 | Agent on LangGraph: loop, evidence ledger, compaction, guardrails | 12 |
 | 2.4 | Tracing instrumented during build (Langfuse) | 4 |
 | 2.5 | Eval harness: decomposition, typed judges, metrics | 12 |
@@ -754,7 +798,7 @@ Designed now, built after Stage 2 verifies. Ordered by value. May partially land
 
 | # | Task | Hours |
 |---|---|---|
-| 3.1 | Three-tier memory + cross-session consolidation | 10 |
+| 3.1 | Semantic memory tier + cross-session consolidation (§7.4–7.5). Episodic tier already built in Stage 2. | 6 |
 | 3.2 | Eval gate + versioned release pipeline | 7 |
 | 3.3 | LLM-assisted mapping tail + audit log | 8 |
 | 3.4 | Governance artifacts + model card | 5 |
@@ -832,9 +876,53 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
 **Stage 2 succeeds if:**
 - Every numeric claim in a memo resolves to a `fact_id` that resolves to an accession number
 - Unsupported-claim rate is measured with a human-calibrated judge, kappa reported
-- Temporal leakage rate is measured and is approximately zero — and if it is not, that is reported honestly
+- Temporal leakage rate is measured and is approximately zero — across **both** surfaces: cited evidence (`filed_date <= as_of`) and recalled conclusions (`learned_as_of <= as_of`) — and if it is not, that is reported honestly
+- Memo sections 6 and 7 produce content rather than status codes, on the strength of the §4.4 field expansion
 - Every run has a trace, and every memo links to it
 
 **Stage 3 succeeds if:**
 - A config change that regresses groundedness is blocked by the gate before release
 - The third memo for a company costs measurably fewer tokens than the first
+
+---
+
+## 16. Revision log
+
+### rev 3 — 2026-08-19 · Stage 2 design revision
+
+Stage 1 shipped (merge `99dc356`) before Stage 2 began. Three decisions were re-opened against the as-built system and settled.
+
+**1. Memory reduced from three tiers to two.** §2, §7.4, §7.5, §12.
+
+The semantic tier and consolidation agent were the costly parts — embedding store, retrieval tuning, a second LLM pipeline — and neither is required by the property that makes memory valuable here. The dated-recall leakage guarantee ("a memo run at as-of D must not surface a conclusion formed after D") needs a SQL predicate, not a vector index. Episodic memory therefore ships in Stage 2 as a plain DuckDB table with SQL retrieval; semantic and consolidation move to Stage 3.
+
+*Retained:* the second temporal-leakage surface, and its eval metric.
+*Given up:* the token-savings result (third memo cheaper than the first), which requires consolidation and was already a Stage 3 success criterion.
+*Reason:* protects the §8.3 human calibration, the schedule item least able to absorb slippage.
+
+**2. Canonical schema expanded from 10 fields to 15.** §4.4, new task 2.0.
+
+Verified against the built database: memo section 6 had *zero* of its three required fields mapped, and section 7 had only `total_liabilities`. Added `inventory`, `accounts_receivable`, `accounts_payable`, `total_debt`, `cash_and_equivalents` — core balance-sheet lines with well-standardised tags, the easy end of the mapping problem rather than the ~94k-tag tail.
+
+**3. Narrative store — build it, library-first.** §4.9, task 2.2.
+
+The original High-risk rating describes a general-purpose splitter across all filers. The actual scope is ~40 documents from ~10 large filers using professional filing agents, where every split can be verified by inspection. Existing libraries (`edgartools`, `sec-parser`) are evaluated before any parser is written. Paragraph chunking is retained as fallback but is not the expected outcome. Note that section labels are *not* required for groundedness scoring — a `span_id` resolves to an exact character range either way; labels buy retrieval precision and the newly-added-risk-factors feature in section 9.
+
+**Unchanged:** the five tools with `as_of` enforced in SQL, the LangGraph ReAct loop, the evidence ledger, compaction's never-compress-identifiers rule, deterministic output guardrails, the five-type claim taxonomy, ~150-claim human calibration, Langfuse tracing, versioned config and the release gate. The architecture ablation remains out of scope per §2.
+
+### Measured state of the built system, as of 2026-08-19
+
+Verified by query against the Stage 1 database, and superseding estimates made before it existed:
+
+| Quantity | Value |
+|---|---|
+| Filings loaded (`raw_sub`) | 197,934 · 2019-01-02 → 2026-03-31 |
+| Raw facts (`raw_num`) | 95,474,906 |
+| Curated facts (`fact`) | 4,720,509 |
+| Companies (`company`) | 11,119 |
+| Distinct figures | 2,110,886 |
+| Figures reported more than once | 63.3% |
+| **Figures whose value changed across versions** | **7.89%** (12.5% of those re-reported) |
+| Companies carrying all 10 v1 fields | 3,106 |
+
+The 63.3% / 7.89% split matters and should be reported as such: most re-reporting is a prior-period comparative column reappearing in a later filing, which is benign. The **7.89%** is the restatement rate proper — the figure the bitemporal store exists to preserve, and the number the leakage argument rests on. Quoting the 63.3% as a restatement rate would overstate the result.
