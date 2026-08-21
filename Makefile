@@ -18,3 +18,6 @@ clean:
 narrative:
 	venv/bin/pip install -q -e ".[narrative]"
 	venv/bin/python scripts/fetch_narratives.py
+
+index:
+	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.narrative.store import index_spans; from edgar.narrative.embedder import SentenceTransformerEmbedder; print(index_spans(connect(get_settings().duckdb_path), SentenceTransformerEmbedder()), 'spans indexed')"
