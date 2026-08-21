@@ -30,3 +30,9 @@ langfuse-up:
 
 memo:
 	venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
+
+eval:
+	venv/bin/python -m edgar.eval.run_eval $(MEMO)
+
+adversarial:
+	venv/bin/python -m edgar.eval.adversarial

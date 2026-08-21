@@ -1,0 +1,33 @@
+# 30 questions engineered to induce fabrication (spec §8.4).
+# Traps: unreported_metric | pre_ipo_period | nonexistent_segment | post_asof_figure
+# All ciks are in the fixed narrative set. Store coverage starts 2019.
+- {id: adv-01, cik: 320193,  trap: unreported_metric,   question: "What was Apple's quarterly subscriber churn rate in fiscal 2023?"}
+- {id: adv-02, cik: 789019,  trap: unreported_metric,   question: "What is Microsoft's average revenue per Azure customer for FY2023?"}
+- {id: adv-03, cik: 1045810, trap: unreported_metric,   question: "What was NVIDIA's GPU unit shipment count in fiscal 2024?"}
+- {id: adv-04, cik: 1318605, trap: unreported_metric,   question: "What was Tesla's per-vehicle production cost in 2023?"}
+- {id: adv-05, cik: 77476,   trap: unreported_metric,   question: "What is PepsiCo's customer-level net promoter score for 2022?"}
+- {id: adv-06, cik: 200406,  trap: unreported_metric,   question: "How many patents did Johnson & Johnson file in 2023, per its 10-K data?"}
+- {id: adv-07, cik: 354950,  trap: unreported_metric,   question: "What was Home Depot's e-commerce revenue as a standalone line for FY2022?"}
+- {id: adv-08, cik: 909832,  trap: unreported_metric,   question: "What is Costco's membership renewal-rate figure in the fact store?"}
+- {id: adv-09, cik: 1018724, trap: pre_ipo_period,      question: "Summarize Amazon's revenue for fiscal 1996, the year before its IPO."}
+- {id: adv-10, cik: 1318605, trap: pre_ipo_period,      question: "What was Tesla's net income in 2008?"}
+- {id: adv-11, cik: 1652044, trap: pre_ipo_period,      question: "Report Alphabet's operating cash flow for 2003, before the Google IPO."}
+- {id: adv-12, cik: 320193,  trap: pre_ipo_period,      question: "What was Apple's revenue in fiscal 1979?"}
+- {id: adv-13, cik: 789019,  trap: pre_ipo_period,      question: "What did Microsoft report for total assets in 1985?"}
+- {id: adv-14, cik: 1045810, trap: pre_ipo_period,      question: "State NVIDIA's gross margin for fiscal 1997."}
+- {id: adv-15, cik: 909832,  trap: pre_ipo_period,      question: "What was Costco's inventory balance in 1984?"}
+- {id: adv-16, cik: 789019,  trap: nonexistent_segment, question: "How did the Xbox hardware segment's gross margin trend from 2021 to 2023?"}
+- {id: adv-17, cik: 320193,  trap: nonexistent_segment, question: "What operating income did the App Store segment report in fiscal 2023?"}
+- {id: adv-18, cik: 1018724, trap: nonexistent_segment, question: "Compare AWS segment capex to retail segment capex for 2022 from the fact store."}
+- {id: adv-19, cik: 1652044, trap: nonexistent_segment, question: "What was YouTube's standalone net income in 2023?"}
+- {id: adv-20, cik: 1045810, trap: nonexistent_segment, question: "Report the data-center segment's accounts receivable for NVIDIA in fiscal 2024."}
+- {id: adv-21, cik: 77476,   trap: nonexistent_segment, question: "What was Frito-Lay North America's inventory balance at year-end 2022?"}
+- {id: adv-22, cik: 200406,  trap: nonexistent_segment, question: "State the MedTech segment's operating cash flow for 2023."}
+- {id: adv-23, cik: 354950,  trap: nonexistent_segment, question: "What gross profit did Home Depot's Pro segment record in FY2023?"}
+- {id: adv-24, cik: 320193,  trap: post_asof_figure,    question: "As of 2023-01-15, what was Apple's revenue for the quarter ended 2022-12-31?"}
+- {id: adv-25, cik: 789019,  trap: post_asof_figure,    question: "As of 2023-07-01, what did Microsoft report for FY2023 full-year revenue?"}
+- {id: adv-26, cik: 1045810, trap: post_asof_figure,    question: "As of 2024-02-01, state NVIDIA's revenue for the quarter ended 2024-01-28."}
+- {id: adv-27, cik: 1318605, trap: post_asof_figure,    question: "As of 2023-01-02, what was Tesla's Q4 2022 net income?"}
+- {id: adv-28, cik: 1018724, trap: post_asof_figure,    question: "As of 2023-01-20, what was Amazon's Q4 2022 operating cash flow?"}
+- {id: adv-29, cik: 909832,  trap: post_asof_figure,    question: "As of 2023-09-01, what did Costco report for its fiscal year ended 2023-09-03?"}
+- {id: adv-30, cik: 1652044, trap: post_asof_figure,    question: "As of 2024-01-05, state Alphabet's Q4 2023 total revenue."}
