@@ -1,10 +1,15 @@
 from datetime import date
+from pathlib import Path
 
 from edgar.config import Settings
+from edgar.agent import nodes
 from edgar.agent.memo import Claim, Memo, MemoSection
+from edgar.db import connect
 from edgar.eval.adversarial import load_cases, score_answer
 from edgar.eval.metrics import compute_metrics
 from edgar.eval.schemas import RawClaim, Verdict
+from edgar.memory.episodic import create_memory_tables
+from edgar.ops.tracing import RecordingTracer
 
 _META = {"memo_path": "m", "config_version": "v", "session_id": "S",
          "as_of": "2023-12-31", "guardrail_rejections": 0}
@@ -44,3 +49,27 @@ def test_refusal_grounded_fabricated():
         [Verdict(claim=RawClaim(claim_text="x", claim_type="UNSUPPORTED"),
                  status="UNSUPPORTED", reason="r")], [], memo_meta=_META)
     assert score_answer(answered, bad) == "FABRICATED"
+
+
+def test_memo_json_path_matches_what_emit_writes(tmp_path):
+    """C1: adversarial.main() no longer globs data/memos for the memo it
+    just wrote (that glob also matches the eval's own *.report.json /
+    *.verdicts.json siblings). It reconstructs the exact stem emit() uses.
+    This test locks the naming contract between the two modules."""
+    con = connect(tmp_path / "t.duckdb")
+    create_memory_tables(con)
+    memo = Memo(cik=320193, company_name="Apple Inc.",
+                as_of=date(2023, 12, 31), sections=[],
+                config_version="v1+deadbeef", trace_id="tr",
+                session_id="S1")
+    out_dir = tmp_path / "memos"
+    state = {"memo": memo, "con": con, "out_dir": out_dir,
+             "guardrail_report": None, "usage": {"in": 0, "out": 0},
+             "question": None, "recalled_ids": [],
+             "tracer": RecordingTracer()}
+    nodes.emit(state)
+
+    # exactly the construction adversarial.main() now uses
+    memo_json = out_dir / f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
+    assert memo_json.exists()
+    assert memo_json == Path(out_dir) / "320193_2023-12-31_v1+deadbeef.json"

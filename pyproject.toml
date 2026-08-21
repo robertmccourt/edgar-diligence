@@ -8,7 +8,7 @@ dependencies = [
     "pydantic>=2.7",
     "pydantic-settings>=2.3",
     "langgraph>=1.2,<2",
-    "anthropic>=0.125",
+    "anthropic>=1.0,<2",
     "pyyaml>=6",
     "langfuse>=4,<5",
 ]

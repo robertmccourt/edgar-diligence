@@ -4,7 +4,8 @@ from datetime import date, datetime
 from edgar.agent.ledger import LedgerEntry
 from edgar.narrative.store import search_spans
 from edgar.tools.compute import ComputeError, compute
-from edgar.tools.facts_tools import get_facts, list_available_facts
+from edgar.tools.facts_tools import (
+    get_fact_history, get_facts, list_available_facts)
 from edgar.tools.peers import get_peer_set
 
 TOOL_DEFS: list[dict] = [
@@ -46,6 +47,23 @@ TOOL_DEFS: list[dict] = [
      "input_schema": {"type": "object", "properties": {
          "cik": {"type": "integer"}},
       "required": ["cik"]}},
+    {"name": "get_fact_history",
+     "description": "Every filed version of ONE figure (same field, same "
+                    "period_start/period_end/period_type/unit), oldest "
+                    "first — the restatement trail. Use this when a figure "
+                    "may have been revised and you need to cite multiple "
+                    "fact_ids for the same number.",
+     "input_schema": {"type": "object", "properties": {
+         "cik": {"type": "integer"},
+         "canonical_field": {"type": "string"},
+         "period_end": {"type": "string", "description": "YYYY-MM-DD"},
+         "period_start": {"type": ["string", "null"],
+                          "description": "YYYY-MM-DD, or null for an "
+                                         "instant fact"},
+         "period_type": {"type": "string"},
+         "unit": {"type": "string"}},
+      "required": ["cik", "canonical_field", "period_end", "period_start",
+                   "period_type", "unit"]}},
 ]
 
 
@@ -98,6 +116,20 @@ def dispatch_tool(con, name, args, *, as_of, embedder, retrieval_k):
                 for e in rep.entries[:8]) or "all AVAILABLE"
             return rep.model_dump_json(), [LedgerEntry(
                 "coverage", "", f"coverage: {gist}", "")]
+        if name == "get_fact_history":
+            pstart = args.get("period_start")
+            facts = get_fact_history(
+                con, int(args["cik"]), args["canonical_field"],
+                _d(args["period_end"]), as_of,
+                period_start=_d(pstart) if pstart else None,
+                period_type=args["period_type"], unit=args["unit"])
+            entries = [LedgerEntry("fact", f.fact_id,
+                                   f"{f.canonical_field} {f.period_end} "
+                                   f"{f.unit} {f.value:g} "
+                                   f"(filed {f.filed_date})", "")
+                       for f in facts]
+            return json.dumps(
+                [f.model_dump(mode="json") for f in facts]), entries
         return json.dumps({"error": f"unknown tool {name}"}), []
     except (ComputeError, ValueError, KeyError, TypeError) as exc:
         return json.dumps({"error": str(exc)}), []

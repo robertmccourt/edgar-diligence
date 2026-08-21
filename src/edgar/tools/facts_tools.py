@@ -3,7 +3,7 @@ from datetime import date
 import duckdb
 
 from edgar.curate.mapping import CANONICAL_FIELDS
-from edgar.query.asof import get_facts_asof
+from edgar.query.asof import get_facts_asof, restatement_history
 from edgar.query.coverage import coverage_map
 from edgar.tools.schemas import (
     CoverageEntry, CoverageReport, FactDTO, GetFactsResult, MissingField)
@@ -51,6 +51,30 @@ def get_facts(con: duckdb.DuckDBPyConnection, cik: int, fields: list[str],
             missing = [MissingField(canonical_field=f, status=str(statuses[f]))
                        for f in missing_fields]
     return GetFactsResult(facts=facts, missing=missing)
+
+
+def get_fact_history(con: duckdb.DuckDBPyConnection, cik: int, field: str,
+                     period_end: date, as_of: date, *,
+                     period_start: date | None, period_type: str,
+                     unit: str) -> list[FactDTO]:
+    """Every filed version of one figure (spec §10's restatement trail),
+    capped to what was knowable on `as_of`.
+
+    `restatement_history` returns every version regardless of when it was
+    filed — the point-in-time cap is applied HERE, not there, so this is
+    the only place a caller can accidentally see a future-filed version.
+    """
+    _validate_fields([field])
+    rows = restatement_history(con, cik, field, period_end,
+                               period_start=period_start,
+                               period_type=period_type, unit=unit)
+    return [FactDTO(fact_id=a.fact_id, cik=a.cik,
+                    canonical_field=a.canonical_field, value=a.value,
+                    unit=a.unit, period_type=a.period_type,
+                    period_start=a.period_start, period_end=a.period_end,
+                    filed_date=a.filed_date, accession=a.accession,
+                    source_tag=a.source_tag)
+            for a in rows if a.filed_date <= as_of]
 
 
 def list_available_facts(con: duckdb.DuckDBPyConnection, cik: int,

@@ -9,7 +9,7 @@ from edgar.memory.episodic import (
 from edgar.tools.compute import create_derivation_table
 from edgar.agent import nodes
 from edgar.agent.agent_config import load_agent_config
-from edgar.agent.ledger import EvidenceLedger
+from edgar.agent.ledger import EvidenceLedger, LedgerEntry
 from edgar.agent.llm import FakeLLM, LLMTurn, ToolCall
 from edgar.agent.memo import Claim, Memo, MemoSection
 from edgar.agent.tool_defs import TOOL_DEFS, dispatch_tool
@@ -128,6 +128,69 @@ def test_write_then_guardrail_then_repair_loop(tmp_path):
     assert st["guardrail_report"].rejection_count == 1
     st = nodes.repair_node(st)
     assert st["memo"].sections[0].claims[0].is_hypothesis
+
+
+def test_write_memo_truncates_ledger_on_whole_lines(tmp_path):
+    con = _con(tmp_path)
+    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+               sections=[])
+    llm = FakeLLM(parsed=[memo])
+    st = _state(con, llm=llm)
+    st["session_id"] = "S-test"
+    for i in range(10):
+        st["ledger"].append(LedgerEntry(
+            "fact", f"f{i:04d}", "revenue grew strongly this quarter",
+            "growth"))
+    full = st["ledger"].render()
+    first_line = full.split("\n")[0]
+    # room for exactly the first whole line, nothing more
+    st["config"] = st["config"].model_copy(update={
+        "context_budget_chars": len(first_line) + 5})
+
+    st = nodes.write_memo(st)
+
+    prompt = llm.parse_calls[0]["prompt"]
+    assert first_line in prompt          # kept line is complete, unmangled
+    assert "[f0001]" not in prompt        # everything past it was dropped
+    assert "9 ledger lines omitted — over context budget" in prompt
+    # no partial identifier: nothing that looks like a cut-off "[f000" or
+    # a fragment of the gist text should appear
+    assert "[f000" not in prompt.replace(first_line, "").replace(
+        "9 ledger lines omitted — over context budget", "")
+
+
+def test_write_memo_qa_mode_single_section(tmp_path):
+    con = _con(tmp_path)
+    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+               sections=[MemoSection(slug="qa", title="Question and answer",
+                                     status="status_code",
+                                     status_note="NOT_DISCLOSED")])
+    llm = FakeLLM(parsed=[memo])
+    st = _state(con, llm=llm, question="What was revenue?")
+    st["session_id"] = "S-test"
+
+    st = nodes.write_memo(st)
+
+    prompt = llm.parse_calls[0]["prompt"]
+    assert "qa" in prompt
+    assert "working_capital" not in prompt
+
+
+def test_dispatch_get_fact_history_filters_and_builds_ledger(tmp_path):
+    con = _con(tmp_path)
+    _fact(con, fact_id="fOld", value=90.0, filed=date(2023, 5, 1),
+          accn="a-1")
+    _fact(con, fact_id="fNew", value=95.0, filed=date(2023, 8, 1),
+          accn="a-2")   # filed after as_of below — must not appear
+    payload, entries = dispatch_tool(
+        con, "get_fact_history",
+        {"cik": 1, "canonical_field": "revenue", "period_end": "2023-03-31",
+         "period_start": "2023-01-01", "period_type": "duration",
+         "unit": "USD"},
+        as_of=date(2023, 6, 1), embedder=FakeEmbedder(), retrieval_k=4)
+    assert "fOld" in payload and "fNew" not in payload
+    assert [e.identifier for e in entries] == ["fOld"]
+    assert all(e.kind == "fact" for e in entries)
 
 
 def test_emit_persists_session_and_dated_conclusions(tmp_path):

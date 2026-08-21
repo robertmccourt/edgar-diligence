@@ -37,6 +37,13 @@ def test_numeric_claim_detector():
     assert _is_numeric_claim("Revenue was $2.1B")
     assert _is_numeric_claim("margin fell 240 bps")
     assert not _is_numeric_claim("Management discussed freight costs")
+    # I2: bare years and ISO dates must not fire the detector on their own
+    assert not _is_numeric_claim("Filed on 2023-05-01")
+    assert not _is_numeric_claim("Fiscal 2023 results")
+    assert not _is_numeric_claim("Management cited freight costs in 2023")
+    # ... but real money/percent and large non-year numbers still do
+    assert _is_numeric_claim("Revenue was $2.1B")
+    assert _is_numeric_claim("headcount of 154000")
 
 
 def test_uncited_numeric_claim_is_violation_and_repair_downgrades(tmp_path):
@@ -85,3 +92,19 @@ def test_labeled_hypotheses_exempt_from_citation_rule(tmp_path):
                                             "peers",
                                        is_hypothesis=True)])
     assert check_memo(con, memo, date(2023, 6, 1)).rejection_count == 0
+
+
+def test_repair_downgrades_hypothesis_citing_ghost_id(tmp_path):
+    con = _con(tmp_path)
+    memo = _memo([], hypotheses=[Claim(text="Margins sit 800 bps below "
+                                            "peers",
+                                       citations=["ghost"],
+                                       is_hypothesis=True)])
+    rep = check_memo(con, memo, date(2023, 6, 1))
+    assert rep.rejection_count == 1
+    assert rep.violations[0].section == "hypotheses"
+    fixed = repair_memo(memo, rep)
+    h = fixed.hypotheses[0]
+    assert h.citations == []
+    assert h.text.startswith("[UNVERIFIED")
+    assert h.is_hypothesis is True   # already a hypothesis, not re-flagged

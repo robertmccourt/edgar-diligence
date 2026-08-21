@@ -67,9 +67,8 @@ def main() -> None:
             as_of = _date.fromisoformat(frag)
         memo = run_agent(cik=case.cik, as_of=as_of, question=case.question,
                          config=cfg)
-        from pathlib import Path
-        memo_json = sorted(Path("data/memos").glob(
-            f"{case.cik}_{as_of}_*.json"))[-1]
+        memo_json = Path("data/memos") / \
+            f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
         report = evaluate_memo(con, judge, memo_json)
         verdict = score_answer(memo, report)
         results.append({"id": case.id, "trap": case.trap,

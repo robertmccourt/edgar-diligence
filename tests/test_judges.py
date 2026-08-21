@@ -95,3 +95,23 @@ def test_temporal_leakage_both_surfaces(tmp_path):
     assert len(problems) == 2
     assert any("fLate" in p for p in problems)
     assert any("C-x" in p for p in problems)
+
+
+def test_temporal_leakage_excludes_derivation_integrity_failures(tmp_path):
+    """I4/visibility split: a derivation whose stored value was tampered
+    with is a guardrail (integrity) violation, not a temporal leak — the
+    MUST-be-zero gate must not be contaminated by it. See
+    test_guardrails.test_derivation_recompute_checked for the guardrail
+    side of this same tamper."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
+    _fact(con, fact_id="rev", field="revenue", value=100.0)
+    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
+               date(2023, 6, 1))
+    con.execute("UPDATE derivation SET value = 0.9 WHERE derivation_id = ?",
+               [d.derivation_id])
+    claims = [RawClaim(claim_text="Gross margin was 40%",
+                       claim_type="DERIVED", citations=[d.derivation_id],
+                       claimed_value=0.40)]
+    problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1))
+    assert problems == []

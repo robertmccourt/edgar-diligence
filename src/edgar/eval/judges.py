@@ -1,10 +1,10 @@
 import json
 from datetime import date
 
-from edgar.agent.guardrails import _visible
 from edgar.agent.llm import LLMClient
 from edgar.eval.schemas import JudgeOpinion, RawClaim, Verdict
 from edgar.tools.compute import ComputeError, recompute
+from edgar.tools.visibility import visible_asof
 
 _SCALES = (1.0, 1e3, 1e6, 1e9)
 _JUDGE_SYSTEM = ("You judge whether evidence supports a claim. "
@@ -112,7 +112,7 @@ def temporal_leakage(con, claims: list[RawClaim], as_of: date,
             if cid in seen:
                 continue
             seen.add(cid)
-            problem = _visible(con, cid, as_of)
+            problem = visible_asof(con, cid, as_of)
             if problem is not None and "unknown" not in problem:
                 problems.append(problem)
     if session_id:

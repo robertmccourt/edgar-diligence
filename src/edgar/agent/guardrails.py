@@ -5,15 +5,26 @@ import duckdb
 from pydantic import BaseModel
 
 from edgar.agent.memo import Claim, Memo
-from edgar.tools.compute import ComputeError, recompute
+from edgar.tools.visibility import check_integrity, visible_asof
 
-_NUMERIC = re.compile(
-    r"(\d[\d,.]*\s*(%|bps|bn|billion|million|x\b)|[$€£]\s*\d|\d{3,})",
+# Money / percent / bps / magnitude-word phrasings: always a numeric claim,
+# regardless of any date-shaped text elsewhere in the sentence.
+_MONEY_PCT = re.compile(
+    r"(\d[\d,.]*\s*(%|bps|bn|billion|million|x\b)|[$€£]\s*\d)",
     re.IGNORECASE)
+# Date-shaped text that must NOT by itself count as a numeric claim: ISO
+# dates and bare 19xx/20xx years (e.g. "Fiscal 2023", "as of 2023-05-01").
+_ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_BARE_YEAR = re.compile(r"\b(19|20)\d{2}\b")
+# Any other 3+ digit run (e.g. "154000") still counts.
+_LARGE_NUMBER = re.compile(r"\d{3,}")
 
 
 def _is_numeric_claim(text: str) -> bool:
-    return bool(_NUMERIC.search(text))
+    if _MONEY_PCT.search(text):
+        return True
+    stripped = _BARE_YEAR.sub("", _ISO_DATE.sub("", text))
+    return bool(_LARGE_NUMBER.search(stripped))
 
 
 class Violation(BaseModel):
@@ -30,31 +41,14 @@ class GuardrailReport(BaseModel):
 
 
 def _visible(con, cid: str, as_of: date) -> str | None:
-    """Return None when the id exists and is visible as of as_of,
-    else a human-readable problem."""
-    if cid.startswith("D-"):
-        row = con.execute("SELECT as_of, value FROM derivation "
-                          "WHERE derivation_id = ?", [cid]).fetchone()
-        if row is None:
-            return f"unknown derivation {cid}"
-        if row[0] > as_of:
-            return f"derivation {cid} computed for later as_of {row[0]}"
-        try:
-            again = recompute(con, cid)
-        except ComputeError as exc:
-            return f"derivation {cid} does not recompute: {exc}"
-        if abs(again.value - row[1]) > 1e-9 * max(1.0, abs(row[1])):
-            return (f"derivation {cid} stored {row[1]} but recomputes "
-                    f"to {again.value}")
-        return None
-    for table, col in (("fact", "fact_id"), ("span", "span_id")):
-        row = con.execute(
-            f"SELECT filed_date FROM {table} WHERE {col} = ?",
-            [cid]).fetchone()
-        if row is not None:
-            return None if row[0] <= as_of else \
-                f"{table} {cid} filed {row[0]} after as_of {as_of}"
-    return f"unknown identifier {cid}"
+    """Return None when the id exists, is visible as of as_of, AND (for a
+    derivation) still recomputes cleanly — else a human-readable problem.
+    Composes the date-only check with the integrity check; see
+    `edgar.tools.visibility` for why those are two functions."""
+    problem = visible_asof(con, cid, as_of)
+    if problem is not None:
+        return problem
+    return check_integrity(con, cid)
 
 
 def check_memo(con: duckdb.DuckDBPyConnection, memo: Memo,
@@ -105,4 +99,10 @@ def repair_memo(memo: Memo, report: GuardrailReport) -> Memo:
                 c.is_hypothesis = True
                 c.text = "[UNVERIFIED — downgraded by guardrail] " + c.text
                 c.citations = []
+    for c in fixed.hypotheses:
+        if ("hypotheses", c.text) in bad:
+            # already labeled speculation — no downgrade, just strip the
+            # citations that don't hold up.
+            c.text = "[UNVERIFIED — downgraded by guardrail] " + c.text
+            c.citations = []
     return fixed

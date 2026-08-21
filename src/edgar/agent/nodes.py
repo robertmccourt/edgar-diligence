@@ -96,10 +96,36 @@ def compact_node(state: dict) -> dict:
     return state
 
 
+def _truncate_ledger(rendered: str, budget: int) -> str:
+    """Truncate on whole lines only (never mid-line), keeping as many
+    complete lines as fit in `budget` chars. When lines are dropped, append
+    a final line recording how many, so the writer and any downstream
+    reader know the ledger was cut."""
+    if len(rendered) <= budget:
+        return rendered
+    lines = rendered.split("\n")
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        added = len(line) + (1 if kept else 0)   # account for the join "\n"
+        if used + added > budget:
+            break
+        used += added
+        kept.append(line)
+    omitted = len(lines) - len(kept)
+    kept.append(f"[{omitted} ledger lines omitted — over context budget]")
+    return "\n".join(kept)
+
+
 def write_memo(state: dict) -> dict:
     cfg = state["config"]
-    section_list = "\n".join(f"{n}. {slug}: {title}"
-                             for n, slug, title in SECTIONS)
+    if state["question"]:
+        section_list = "1. qa: Question and answer"
+    else:
+        section_list = "\n".join(f"{n}. {slug}: {title}"
+                                 for n, slug, title in SECTIONS)
+    ledger_text = _truncate_ledger(state["ledger"].render(),
+                                   cfg.context_budget_chars)
     prompt = (
         "Write the diligence memo as structured output.\n"
         "Sections (use these slugs/titles, in order):\n" + section_list +
@@ -107,8 +133,7 @@ def write_memo(state: dict) -> dict:
         "evidence ledger below, copied verbatim. One assertion per claim. "
         "A section whose evidence is only status codes gets "
         "status='status_code' and a status_note. Value-creation ideas go "
-        "in hypotheses, labeled.\n\nEVIDENCE LEDGER:\n" +
-        state["ledger"].render()[:cfg.context_budget_chars])
+        "in hypotheses, labeled.\n\nEVIDENCE LEDGER:\n" + ledger_text)
     memo = state["llm"].parse_structured(
         system=load_system_prompt(), prompt=prompt, output_model=Memo)
     state["memo"] = memo.model_copy(update={
