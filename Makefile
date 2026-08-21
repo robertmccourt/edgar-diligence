@@ -10,7 +10,7 @@ build:
 	python -m edgar.pipeline
 
 rebuild-curated:
-	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.pipeline import rebuild_curated; import json; print(json.dumps(rebuild_curated(connect(get_settings().duckdb_path)), indent=2, default=str))"
+	PYTHONPATH=src venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.pipeline import rebuild_curated; import json; print(json.dumps(rebuild_curated(connect(get_settings().duckdb_path)), indent=2, default=str))"
 
 clean:
 	rm -rf data/edgar.duckdb
@@ -20,7 +20,7 @@ narrative:
 	venv/bin/python scripts/fetch_narratives.py
 
 index:
-	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.narrative.store import index_spans; from edgar.narrative.embedder import SentenceTransformerEmbedder; print(index_spans(connect(get_settings().duckdb_path), SentenceTransformerEmbedder()), 'spans indexed')"
+	PYTHONPATH=src venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.narrative.store import index_spans; from edgar.narrative.embedder import SentenceTransformerEmbedder; print(index_spans(connect(get_settings().duckdb_path), SentenceTransformerEmbedder()), 'spans indexed')"
 
 langfuse-up:
 	@test -d ../langfuse || git clone https://github.com/langfuse/langfuse.git ../langfuse
@@ -29,10 +29,10 @@ langfuse-up:
 	@echo "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST=http://localhost:3000 in .env"
 
 memo:
-	venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
+	PYTHONPATH=src venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
 
 eval:
-	venv/bin/python -m edgar.eval.run_eval $(MEMO)
+	PYTHONPATH=src venv/bin/python -m edgar.eval.run_eval $(MEMO)
 
 adversarial:
-	venv/bin/python -m edgar.eval.adversarial
+	PYTHONPATH=src venv/bin/python -m edgar.eval.adversarial

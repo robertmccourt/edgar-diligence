@@ -60,6 +60,7 @@ def try_load_fts(con) -> bool:
 
 
 def index_spans(con, embedder: Embedder) -> int:
+    create_narrative_tables(con)   # real store may predate the span table
     docs = con.execute(
         "SELECT doc_id, cik, accession, form, item, filed_date, text "
         "FROM narrative_doc").fetchall()
