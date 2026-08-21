@@ -14,3 +14,7 @@ rebuild-curated:
 
 clean:
 	rm -rf data/edgar.duckdb
+
+narrative:
+	venv/bin/pip install -q -e ".[narrative]"
+	venv/bin/python scripts/fetch_narratives.py
