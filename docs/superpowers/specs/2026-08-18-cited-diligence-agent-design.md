@@ -453,7 +453,9 @@ search_filings(cik, query, as_of, sections=None, k=8) -> list[Span]
 compute(expression: str, inputs: dict[str, str]) -> Computation
     # inputs maps variable names to fact_ids.
     # Returns value + derivation_id + full substitution record.
-    # Rejects duration/instant mixing and cross-fiscal-calendar comparison.
+    # Rejects additive (+/-) mixing of duration and instant operands and
+    # cross-fiscal-calendar comparison; ratios across period types are
+    # permitted (asset turnover and days metrics require them). [rev 3a]
 
 get_peer_set(cik, as_of, min_peers=10) -> PeerSet
     # SIC-based, calendar-aligned, selection rule recorded.
@@ -887,6 +889,10 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
 ---
 
 ## 16. Revision log
+
+### rev 3a — 2026-08-20 · compute type rule refined (Task 4)
+
+§6's blanket "rejects duration/instant mixing" would make the memo template's own sections 5-6 uncomputable — asset turnover is revenue (duration) / assets (instant); every days-metric is an instant/duration ratio. Enforceable invariant: + and − require like period types; × and ÷ may cross. Additive mixing is the modeling bug the rule exists to stop.
 
 ### rev 3 — 2026-08-19 · Stage 2 design revision
 
