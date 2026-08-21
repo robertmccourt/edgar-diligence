@@ -42,9 +42,16 @@ def main() -> None:
     from edgar.agent.llm import AnthropicLLM
     from edgar.config import get_settings, load_secrets_env
     from edgar.db import connect
+    from edgar.memory.episodic import create_memory_tables
+    from edgar.tools.compute import create_derivation_table
     load_secrets_env()
     cfg = load_agent_config("v1")
     con = connect(get_settings().duckdb_path)
+    # Real store may predate these tables — temporal_leakage/recompute
+    # read `session`/`derivation` when evaluating an older memo on a
+    # fresh store. Idempotent CREATE IF NOT EXISTS.
+    create_derivation_table(con)
+    create_memory_tables(con)
     report = evaluate_memo(con, AnthropicLLM(cfg.judge_model),
                            Path(sys.argv[1]))
     print(to_markdown(report))

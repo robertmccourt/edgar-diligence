@@ -97,6 +97,21 @@ def test_temporal_leakage_both_surfaces(tmp_path):
     assert any("C-x" in p for p in problems)
 
 
+def test_temporal_leakage_excludes_fabricated_citation_ids(tmp_path):
+    """Strongly-recommended test from the final whole-branch review:
+    an unknown/fabricated citation id is guardrail territory (caught by
+    citation_resolves), not a temporal leak. `visible_asof` reports it as
+    "unknown identifier ..." and `temporal_leakage`'s `"unknown" not in
+    problem` filter must keep excluding it — pinning the behavior so a
+    future rewording of either message can't silently start counting
+    fabrications as leaks in the MUST-be-zero headline metric."""
+    con = _con(tmp_path)
+    claims = [RawClaim(claim_text="x", claim_type="NUMERIC",
+                       citations=["totally-fake-id"], claimed_value=1.0)]
+    problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1))
+    assert problems == []
+
+
 def test_temporal_leakage_excludes_derivation_integrity_failures(tmp_path):
     """I4/visibility split: a derivation whose stored value was tampered
     with is a guardrail (integrity) violation, not a temporal leak — the

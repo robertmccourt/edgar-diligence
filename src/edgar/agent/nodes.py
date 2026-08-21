@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from pathlib import Path
 
@@ -165,11 +166,15 @@ def emit(state: dict) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
     (out_dir / f"{stem}.md").write_text(render_markdown(memo))
-    (out_dir / f"{stem}.json").write_text(json.dumps({
+    blob = {
         "memo": memo.model_dump(mode="json"),
         "guardrail_rejections": state["guardrail_report"].rejection_count
         if state["guardrail_report"] else 0,
-        "usage": state["usage"]}))
+        "usage": state["usage"]}
+    t0 = state.get("t0")
+    if t0 is not None:
+        blob["latency_s"] = round(time.monotonic() - t0, 3)
+    (out_dir / f"{stem}.json").write_text(json.dumps(blob))
     save_session(con, session_id=memo.session_id, cik=memo.cik,
                  as_of=memo.as_of, config_version=memo.config_version,
                  trace_id=memo.trace_id, question=state["question"],

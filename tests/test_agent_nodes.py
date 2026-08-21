@@ -210,3 +210,25 @@ def test_emit_persists_session_and_dated_conclusions(tmp_path):
                     "FROM session_conclusion").fetchone()
     assert c == ("Revenue was 100", date(2023, 6, 1))
     assert list((tmp_path / "memos").glob("*.md"))
+
+
+def test_emit_writes_latency_s_when_t0_present(tmp_path):
+    """F4: run_agent stashes t0 = time.monotonic() in state before the
+    graph invoke; emit must turn that into a latency_s field in the
+    memo JSON. Absent t0 (e.g. a node test that never sets it), the key
+    is omitted rather than crashing."""
+    import json
+    import time
+
+    con = _con(tmp_path)
+    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                sections=[], config_version="v1+deadbeef", trace_id="tr",
+                session_id="S1")
+    st = _state(con, memo=memo)
+    st["out_dir"] = tmp_path / "memos"
+    st["t0"] = time.monotonic()
+    nodes.emit(st)
+    stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
+    blob = json.loads((st["out_dir"] / f"{stem}.json").read_text())
+    assert "latency_s" in blob
+    assert blob["latency_s"] >= 0.0

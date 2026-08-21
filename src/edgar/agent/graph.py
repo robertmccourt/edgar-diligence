@@ -1,3 +1,4 @@
+import time
 from datetime import date
 from pathlib import Path
 
@@ -7,6 +8,9 @@ from edgar.agent import nodes
 from edgar.agent.agent_config import load_agent_config
 from edgar.agent.ledger import EvidenceLedger
 from edgar.agent.memo import Memo
+from edgar.memory.episodic import create_memory_tables
+from edgar.narrative.store import create_narrative_tables
+from edgar.tools.compute import create_derivation_table
 
 
 def build_graph():
@@ -43,6 +47,12 @@ def run_agent(*, cik: int, as_of: date, question: str | None = None,
     if con is None:
         from edgar.db import connect
         con = connect()
+    # Real store may predate these tables (mirrors the 50fa43b index_spans
+    # hardening) — ensure them here so `make memo` against a fresh/older
+    # store doesn't crash on the first session-memory or compute call.
+    create_derivation_table(con)
+    create_memory_tables(con)
+    create_narrative_tables(con)
     if llm is None:
         from edgar.agent.llm import AnthropicLLM
         llm = AnthropicLLM(cfg.generation_model)
@@ -59,6 +69,6 @@ def run_agent(*, cik: int, as_of: date, question: str | None = None,
                  repair_round=0, conclusions=[], recalled_ids=[],
                  usage={"in": 0, "out": 0},
                  company_name=row[0] if row else f"CIK {cik}",
-                 out_dir=out_dir)
+                 out_dir=out_dir, t0=time.monotonic())
     final = build_graph().invoke(state)
     return final["memo"]

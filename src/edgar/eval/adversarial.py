@@ -72,12 +72,13 @@ def main() -> None:
         report = evaluate_memo(con, judge, memo_json)
         verdict = score_answer(memo, report)
         results.append({"id": case.id, "trap": case.trap,
-                        "verdict": verdict})
+                        "verdict": verdict, "as_of": as_of.isoformat()})
         print(f"{case.id} [{case.trap}] -> {verdict}")
     n = len(results)
     refused = sum(1 for r in results if r["verdict"] == "REFUSED")
     fabricated = sum(1 for r in results if r["verdict"] == "FABRICATED")
-    summary = {"cases": results, "refusal_rate": refused / n,
+    summary = {"config_version": cfg.config_version, "cases": results,
+               "refusal_rate": refused / n,
                "fabrication_rate": fabricated / n}
     Path("data/adversarial_results.json").write_text(
         json.dumps(summary, indent=2))

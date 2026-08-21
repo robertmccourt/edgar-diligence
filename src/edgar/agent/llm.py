@@ -59,6 +59,11 @@ class AnthropicLLM:
                        usage_out=resp.usage.output_tokens)
 
     def parse_structured(self, *, system, prompt, output_model):
+        """`resp.parsed_output` is Optional on the SDK's `ParsedMessage` —
+        a truncated or refused generation returns None rather than an
+        instance of `output_model`. Guarded here so the failure surfaces
+        as an `LLMError` naming the stop reason, not an opaque
+        `AttributeError` two modules away in `write_memo`."""
         try:
             resp = self._client.messages.parse(
                 model=self._model, max_tokens=self._max_tokens,
@@ -68,6 +73,10 @@ class AnthropicLLM:
         except (self._anthropic.APIStatusError,
                 self._anthropic.APIConnectionError) as exc:
             raise LLMError(str(exc)) from exc
+        if resp.parsed_output is None:
+            raise LLMError("structured parse returned no output "
+                           "(stop_reason=" +
+                           str(getattr(resp, "stop_reason", "?")) + ")")
         return resp.parsed_output
 
 

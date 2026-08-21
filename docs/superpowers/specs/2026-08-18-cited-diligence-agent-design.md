@@ -784,7 +784,7 @@ The deadline deliverable. One agent, instrumented, with a measured and human-cal
 
 | # | Task | Hours |
 |---|---|---|
-| 2.0 | **Canonical schema expansion — 5 fields** (§4.4): inventory, receivables, payables, total_debt, cash. Seed rules + tests + rebuild. Prerequisite for memo sections 6–7. | 4 |
+| 2.0 | **Canonical schema expansion — 5 fields** (§4.4): inventory, receivables, payables, long_term_debt (see §4.4's measured rationale for the total_debt → long_term_debt rename), cash. Seed rules + tests + rebuild. Prerequisite for memo sections 6–7. | 4 |
 | 2.1 | Tool layer, Pydantic schemas, as-of enforced | 6 |
 | 2.2 | Narrative extraction, sectioning, indexing (~10 companies). **Library-first** — evaluate `edgartools` / `sec-parser` before writing a splitter; verify all ~40 splits by inspection (tractable at this scale); paragraph-chunking fallback retained but not expected. | 7 |
 | 2.2b | **Dated episodic memory** (§7.4): one DuckDB table, SQL retrieval, `learned_as_of <= as_of` enforced; leakage test in the eval | 2 |
@@ -889,6 +889,14 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
 ---
 
 ## 16. Revision log
+
+### rev 3b — 2026-08-20 · as-built divergences recorded
+
+Two divergences from this spec's §7 flow, found on final whole-branch review and not previously logged:
+
+**§7.6 multi-turn follow-ups.** The spec's flow has `REPLY → FU → RETR` — follow-ups inside one session, sharing a ledger, so groundedness-over-a-session is measurable. What shipped instead is one-shot question mode (`--question`): each question is its own session, linked to prior sessions only through dated episodic memory. In-session multi-turn is deferred to Stage 3.
+
+**§7 eligibility gate.** The flow's `ELIG → no → STOP` branch is not implemented — `run_agent` never checks `company.eligibility_status`, so it will produce a memo for any cik present in the store, eligible or not. Deferred: the eval set is the fixed, hand-picked 10-company universe, all of which are eligible, so the gate has no case to reject yet. Revisit before the store's cik universe is opened up beyond that set.
 
 ### rev 3a — 2026-08-20 · compute type rule refined (Task 4)
 
