@@ -1,0 +1,143 @@
+# Review package: 06ae7df..38953a1
+
+## Commits
+38953a1 feat(config): model ids, narrative set, secrets loader; drop unused pandas
+
+## Files changed
+ pyproject.toml       |  6 +++++-
+ src/edgar/config.py  | 34 ++++++++++++++++++++++++++++++++++
+ tests/test_config.py | 30 ++++++++++++++++++++++++++++++
+ 3 files changed, 69 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/pyproject.toml b/pyproject.toml
+index 1cd43b5..8e7daa0 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,24 +1,28 @@
+ [project]
+ name = "edgar-diligence"
+ version = "0.1.0"
+ requires-python = ">=3.11"
+ dependencies = [
+     "duckdb>=1.0",
+     "httpx>=0.27",
+     "pydantic>=2.7",
+     "pydantic-settings>=2.3",
+-    "pandas>=2.2",
++    "langgraph>=1.2,<2",
++    "anthropic>=0.125",
++    "pyyaml>=6",
++    "langfuse>=4,<5",
+ ]
+ 
+ [project.optional-dependencies]
+ dev = ["pytest>=8.0", "pytest-cov>=5.0"]
++narrative = ["edgartools>=5.51", "sentence-transformers>=6"]
+ 
+ [build-system]
+ requires = ["hatchling"]
+ build-backend = "hatchling.build"
+ 
+ [tool.hatch.build.targets.wheel]
+ packages = ["src/edgar"]
+ 
+ [tool.pytest.ini_options]
+ pythonpath = ["src"]
+diff --git a/src/edgar/config.py b/src/edgar/config.py
+index 20c614c..a8dc413 100644
+--- a/src/edgar/config.py
++++ b/src/edgar/config.py
+@@ -1,22 +1,56 @@
++import os
+ from functools import lru_cache
+ from pathlib import Path
+ from pydantic_settings import BaseSettings, SettingsConfigDict
+ 
++_SECRET_KEYS = ("ANTHROPIC_API_KEY", "LANGFUSE_PUBLIC_KEY",
++                "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST")
++
+ 
+ class Settings(BaseSettings):
+     model_config = SettingsConfigDict(env_prefix="EDGAR_", env_file=".env")
+ 
+     data_dir: Path = Path("data")
+     duckdb_path: Path = Path("data/edgar.duckdb")
+     sec_user_agent: str = "Robert McCourt rmmccourt01@comcast.net"
+     start_year: int = 2019
+     start_quarter: int = 1
++    generation_model: str = "claude-opus-5"
++    judge_model: str = "claude-sonnet-5"
++    # Fixed Stage 2 narrative/eval set (spec §4.9): eligible, sector- and
++    # fiscal-calendar-diverse, all 10 v1 fields present. Verified 2026-08-19.
++    narrative_ciks: tuple[int, ...] = (
++        320193, 789019, 1045810, 1318605, 77476,
++        200406, 354950, 909832, 1018724, 1652044,
++    )
+ 
+     @property
+     def raw_dir(self) -> Path:
+         return self.data_dir / "raw"
+ 
+ 
++def load_secrets_env(path: Path | None = None) -> list[str]:
++    """os.environ.setdefault unprefixed secrets from .env.
++
++    pydantic-settings binds only EDGAR_-prefixed keys; the anthropic and
++    langfuse SDKs read their own env vars. Shell env always wins.
++    """
++    target = path if path is not None else Path(".env")
++    if not target.exists():
++        return []
++    loaded: list[str] = []
++    for line in target.read_text().splitlines():
++        line = line.strip()
++        if not line or line.startswith("#") or "=" not in line:
++            continue
++        key, _, value = line.partition("=")
++        key = key.strip()
++        if key in _SECRET_KEYS and key not in os.environ:
++            os.environ[key] = value.strip()
++            loaded.append(key)
++    return loaded
++
++
+ @lru_cache
+ def get_settings() -> Settings:
+     return Settings()
+diff --git a/tests/test_config.py b/tests/test_config.py
+new file mode 100644
+index 0000000..f2790ee
+--- /dev/null
++++ b/tests/test_config.py
+@@ -0,0 +1,30 @@
++import os
++from edgar.config import Settings, load_secrets_env
++
++
++def test_model_defaults():
++    s = Settings(_env_file=None)
++    assert s.generation_model == "claude-opus-5"
++    assert s.judge_model == "claude-sonnet-5"
++    assert len(s.narrative_ciks) == 10 and 320193 in s.narrative_ciks
++
++
++def test_load_secrets_env_sets_and_reports(tmp_path, monkeypatch):
++    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
++    env = tmp_path / ".env"
++    env.write_text("ANTHROPIC_API_KEY=sk-test\n# comment\nEDGAR_DATA_DIR=x\n")
++    set_names = load_secrets_env(env)
++    assert os.environ["ANTHROPIC_API_KEY"] == "sk-test"
++    assert set_names == ["ANTHROPIC_API_KEY"]
++
++
++def test_load_secrets_env_never_overrides(tmp_path, monkeypatch):
++    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-shell")
++    env = tmp_path / ".env"
++    env.write_text("ANTHROPIC_API_KEY=sk-file\n")
++    assert load_secrets_env(env) == []
++    assert os.environ["ANTHROPIC_API_KEY"] == "from-shell"
++
++
++def test_load_secrets_env_missing_file_is_noop(tmp_path):
++    assert load_secrets_env(tmp_path / "absent.env") == []

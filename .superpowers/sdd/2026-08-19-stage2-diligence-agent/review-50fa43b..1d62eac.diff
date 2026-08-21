@@ -1,0 +1,432 @@
+# Review package: 50fa43b..1d62eac
+
+## Commits
+1d62eac fix(final-review): harden real-store agent path, traceability, latency
+
+## Files changed
+ .../2026-08-18-cited-diligence-agent-design.md     | 10 ++++-
+ src/edgar/agent/graph.py                           | 12 +++++-
+ src/edgar/agent/llm.py                             |  9 +++++
+ src/edgar/agent/nodes.py                           |  9 ++++-
+ src/edgar/eval/adversarial.py                      |  5 ++-
+ src/edgar/eval/run_eval.py                         |  7 ++++
+ tests/test_agent_graph.py                          | 45 ++++++++++++++++++++++
+ tests/test_agent_nodes.py                          | 22 +++++++++++
+ tests/test_judges.py                               | 15 ++++++++
+ 9 files changed, 128 insertions(+), 6 deletions(-)
+
+## Diff
+diff --git a/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md b/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
+index d0d48ca..1f7945f 100644
+--- a/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
++++ b/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
+@@ -777,21 +777,21 @@ The real constraint is **Claude usage limits** (§14). That shapes *how* the wor
+ | 1.6 | Universe definition + eligibility screen | 3 |
+ 
+ If everything after this collapses, Stage 1 alone is a complete artifact: *a point-in-time SEC fundamentals store and a measurement of what backfilled data does to evaluation.*
+ 
+ ### Stage 2 — by 2026-09-04 (~59 h) · thin end-to-end slice
+ 
+ The deadline deliverable. One agent, instrumented, with a measured and human-calibrated eval.
+ 
+ | # | Task | Hours |
+ |---|---|---|
+-| 2.0 | **Canonical schema expansion — 5 fields** (§4.4): inventory, receivables, payables, total_debt, cash. Seed rules + tests + rebuild. Prerequisite for memo sections 6–7. | 4 |
++| 2.0 | **Canonical schema expansion — 5 fields** (§4.4): inventory, receivables, payables, long_term_debt (see §4.4's measured rationale for the total_debt → long_term_debt rename), cash. Seed rules + tests + rebuild. Prerequisite for memo sections 6–7. | 4 |
+ | 2.1 | Tool layer, Pydantic schemas, as-of enforced | 6 |
+ | 2.2 | Narrative extraction, sectioning, indexing (~10 companies). **Library-first** — evaluate `edgartools` / `sec-parser` before writing a splitter; verify all ~40 splits by inspection (tractable at this scale); paragraph-chunking fallback retained but not expected. | 7 |
+ | 2.2b | **Dated episodic memory** (§7.4): one DuckDB table, SQL retrieval, `learned_as_of <= as_of` enforced; leakage test in the eval | 2 |
+ | 2.3 | Agent on LangGraph: loop, evidence ledger, compaction, guardrails | 12 |
+ | 2.4 | Tracing instrumented during build (Langfuse) | 4 |
+ | 2.5 | Eval harness: decomposition, typed judges, metrics | 12 |
+ | 2.6 | Human calibration (~150 claims) — **reserved** | 6 |
+ | 2.7 | Writeup — **reserved** | 12 |
+ 
+ ### Stage 3 — after Stage 2 (~48 h, or ~40 h excluding optional dbt) · depth
+@@ -883,20 +883,28 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
+ - Every run has a trace, and every memo links to it
+ 
+ **Stage 3 succeeds if:**
+ - A config change that regresses groundedness is blocked by the gate before release
+ - The third memo for a company costs measurably fewer tokens than the first
+ 
+ ---
+ 
+ ## 16. Revision log
+ 
++### rev 3b — 2026-08-20 · as-built divergences recorded
++
++Two divergences from this spec's §7 flow, found on final whole-branch review and not previously logged:
++
++**§7.6 multi-turn follow-ups.** The spec's flow has `REPLY → FU → RETR` — follow-ups inside one session, sharing a ledger, so groundedness-over-a-session is measurable. What shipped instead is one-shot question mode (`--question`): each question is its own session, linked to prior sessions only through dated episodic memory. In-session multi-turn is deferred to Stage 3.
++
++**§7 eligibility gate.** The flow's `ELIG → no → STOP` branch is not implemented — `run_agent` never checks `company.eligibility_status`, so it will produce a memo for any cik present in the store, eligible or not. Deferred: the eval set is the fixed, hand-picked 10-company universe, all of which are eligible, so the gate has no case to reject yet. Revisit before the store's cik universe is opened up beyond that set.
++
+ ### rev 3a — 2026-08-20 · compute type rule refined (Task 4)
+ 
+ §6's blanket "rejects duration/instant mixing" would make the memo template's own sections 5-6 uncomputable — asset turnover is revenue (duration) / assets (instant); every days-metric is an instant/duration ratio. Enforceable invariant: + and − require like period types; × and ÷ may cross. Additive mixing is the modeling bug the rule exists to stop.
+ 
+ ### rev 3 — 2026-08-19 · Stage 2 design revision
+ 
+ Stage 1 shipped (merge `99dc356`) before Stage 2 began. Three decisions were re-opened against the as-built system and settled.
+ 
+ **1. Memory reduced from three tiers to two.** §2, §7.4, §7.5, §12.
+ 
+diff --git a/src/edgar/agent/graph.py b/src/edgar/agent/graph.py
+index 230bf79..54bc683 100644
+--- a/src/edgar/agent/graph.py
++++ b/src/edgar/agent/graph.py
+@@ -1,19 +1,23 @@
++import time
+ from datetime import date
+ from pathlib import Path
+ 
+ from langgraph.graph import END, START, StateGraph
+ 
+ from edgar.agent import nodes
+ from edgar.agent.agent_config import load_agent_config
+ from edgar.agent.ledger import EvidenceLedger
+ from edgar.agent.memo import Memo
++from edgar.memory.episodic import create_memory_tables
++from edgar.narrative.store import create_narrative_tables
++from edgar.tools.compute import create_derivation_table
+ 
+ 
+ def build_graph():
+     g = StateGraph(dict)
+     for name in ("load_memory", "coverage_node", "plan_node",
+                  "retrieve_section", "compact_node", "write_memo",
+                  "guardrail_node", "repair_node", "emit"):
+         g.add_node(name, getattr(nodes, name))
+     g.add_edge(START, "load_memory")
+     g.add_edge("load_memory", "coverage_node")
+@@ -36,29 +40,35 @@ def build_graph():
+ 
+ 
+ def run_agent(*, cik: int, as_of: date, question: str | None = None,
+               config=None, llm=None, embedder=None, tracer=None,
+               con=None, out_dir: Path = Path("data/memos")) -> Memo:
+     from edgar.ops.tracing import make_tracer
+     cfg = config or load_agent_config("v1")
+     if con is None:
+         from edgar.db import connect
+         con = connect()
++    # Real store may predate these tables (mirrors the 50fa43b index_spans
++    # hardening) — ensure them here so `make memo` against a fresh/older
++    # store doesn't crash on the first session-memory or compute call.
++    create_derivation_table(con)
++    create_memory_tables(con)
++    create_narrative_tables(con)
+     if llm is None:
+         from edgar.agent.llm import AnthropicLLM
+         llm = AnthropicLLM(cfg.generation_model)
+     if embedder is None:
+         from edgar.narrative.embedder import SentenceTransformerEmbedder
+         embedder = SentenceTransformerEmbedder()
+     tracer = tracer or make_tracer(f"memo-{cik}-{as_of}")
+     row = con.execute("SELECT name FROM company WHERE cik = ?",
+                       [cik]).fetchone()
+     state = dict(cik=cik, as_of=as_of, question=question, config=cfg,
+                  con=con, llm=llm, embedder=embedder, tracer=tracer,
+                  ledger=EvidenceLedger(), coverage=None, plan=[],
+                  section_idx=0, memo=None, guardrail_report=None,
+                  repair_round=0, conclusions=[], recalled_ids=[],
+                  usage={"in": 0, "out": 0},
+                  company_name=row[0] if row else f"CIK {cik}",
+-                 out_dir=out_dir)
++                 out_dir=out_dir, t0=time.monotonic())
+     final = build_graph().invoke(state)
+     return final["memo"]
+diff --git a/src/edgar/agent/llm.py b/src/edgar/agent/llm.py
+index bf78e11..3be76f1 100644
+--- a/src/edgar/agent/llm.py
++++ b/src/edgar/agent/llm.py
+@@ -52,29 +52,38 @@ class AnthropicLLM:
+                 self._anthropic.APIConnectionError) as exc:
+             raise LLMError(str(exc)) from exc
+         text = "".join(b.text for b in resp.content if b.type == "text")
+         calls = [ToolCall(b.id, b.name, dict(b.input))
+                  for b in resp.content if b.type == "tool_use"]
+         return LLMTurn(text=text, tool_calls=calls, raw_content=resp.content,
+                        usage_in=resp.usage.input_tokens,
+                        usage_out=resp.usage.output_tokens)
+ 
+     def parse_structured(self, *, system, prompt, output_model):
++        """`resp.parsed_output` is Optional on the SDK's `ParsedMessage` —
++        a truncated or refused generation returns None rather than an
++        instance of `output_model`. Guarded here so the failure surfaces
++        as an `LLMError` naming the stop reason, not an opaque
++        `AttributeError` two modules away in `write_memo`."""
+         try:
+             resp = self._client.messages.parse(
+                 model=self._model, max_tokens=self._max_tokens,
+                 system=system,
+                 messages=[{"role": "user", "content": prompt}],
+                 output_format=output_model)
+         except (self._anthropic.APIStatusError,
+                 self._anthropic.APIConnectionError) as exc:
+             raise LLMError(str(exc)) from exc
++        if resp.parsed_output is None:
++            raise LLMError("structured parse returned no output "
++                           "(stop_reason=" +
++                           str(getattr(resp, "stop_reason", "?")) + ")")
+         return resp.parsed_output
+ 
+ 
+ @dataclass
+ class FakeLLM:
+     """Scripted double. Also records every call for assertions."""
+     turns: list[LLMTurn] = field(default_factory=list)
+     parsed: list[BaseModel] = field(default_factory=list)
+     calls: list[dict] = field(default_factory=list)
+     parse_calls: list[dict] = field(default_factory=list)
+diff --git a/src/edgar/agent/nodes.py b/src/edgar/agent/nodes.py
+index 1f842f5..497c33d 100644
+--- a/src/edgar/agent/nodes.py
++++ b/src/edgar/agent/nodes.py
+@@ -1,11 +1,12 @@
+ import json
++import time
+ import uuid
+ from pathlib import Path
+ 
+ from edgar.agent.guardrails import check_memo, repair_memo
+ from edgar.agent.ledger import LedgerEntry
+ from edgar.agent.memo import Memo, render_markdown
+ from edgar.agent.tool_defs import TOOL_DEFS, dispatch_tool
+ from edgar.memory.episodic import (
+     recall_conclusions, record_conclusions, save_session)
+ from edgar.memory.procedural import SECTIONS, load_rubric, load_system_prompt
+@@ -158,25 +159,29 @@ def repair_node(state: dict) -> dict:
+     state["repair_round"] += 1
+     return state
+ 
+ 
+ def emit(state: dict) -> dict:
+     memo, con = state["memo"], state["con"]
+     out_dir = Path(state.get("out_dir", "data/memos"))
+     out_dir.mkdir(parents=True, exist_ok=True)
+     stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
+     (out_dir / f"{stem}.md").write_text(render_markdown(memo))
+-    (out_dir / f"{stem}.json").write_text(json.dumps({
++    blob = {
+         "memo": memo.model_dump(mode="json"),
+         "guardrail_rejections": state["guardrail_report"].rejection_count
+         if state["guardrail_report"] else 0,
+-        "usage": state["usage"]}))
++        "usage": state["usage"]}
++    t0 = state.get("t0")
++    if t0 is not None:
++        blob["latency_s"] = round(time.monotonic() - t0, 3)
++    (out_dir / f"{stem}.json").write_text(json.dumps(blob))
+     save_session(con, session_id=memo.session_id, cik=memo.cik,
+                  as_of=memo.as_of, config_version=memo.config_version,
+                  trace_id=memo.trace_id, question=state["question"],
+                  recalled_conclusion_ids=state["recalled_ids"])
+     conclusions = [c.text for s in memo.sections
+                    if s.slug in _CONCLUSION_SECTIONS
+                    for c in s.claims if not c.is_hypothesis][:5]
+     record_conclusions(con, session_id=memo.session_id, cik=memo.cik,
+                        conclusions=conclusions, learned_as_of=memo.as_of,
+                        trace_id=memo.trace_id)
+diff --git a/src/edgar/eval/adversarial.py b/src/edgar/eval/adversarial.py
+index 3f6422a..40bbd63 100644
+--- a/src/edgar/eval/adversarial.py
++++ b/src/edgar/eval/adversarial.py
+@@ -65,24 +65,25 @@ def main() -> None:
+         if "As of " in case.question:      # post_asof cases embed their date
+             frag = case.question.split("As of ", 1)[1][:10]
+             as_of = _date.fromisoformat(frag)
+         memo = run_agent(cik=case.cik, as_of=as_of, question=case.question,
+                          config=cfg)
+         memo_json = Path("data/memos") / \
+             f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
+         report = evaluate_memo(con, judge, memo_json)
+         verdict = score_answer(memo, report)
+         results.append({"id": case.id, "trap": case.trap,
+-                        "verdict": verdict})
++                        "verdict": verdict, "as_of": as_of.isoformat()})
+         print(f"{case.id} [{case.trap}] -> {verdict}")
+     n = len(results)
+     refused = sum(1 for r in results if r["verdict"] == "REFUSED")
+     fabricated = sum(1 for r in results if r["verdict"] == "FABRICATED")
+-    summary = {"cases": results, "refusal_rate": refused / n,
++    summary = {"config_version": cfg.config_version, "cases": results,
++               "refusal_rate": refused / n,
+                "fabrication_rate": fabricated / n}
+     Path("data/adversarial_results.json").write_text(
+         json.dumps(summary, indent=2))
+     print(f"refusal {refused}/{n}, fabrication {fabricated}/{n}")
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/src/edgar/eval/run_eval.py b/src/edgar/eval/run_eval.py
+index a636ea6..1bdb80b 100644
+--- a/src/edgar/eval/run_eval.py
++++ b/src/edgar/eval/run_eval.py
+@@ -35,20 +35,27 @@ def evaluate_memo(con, llm, memo_json_path: Path) -> EvalReport:
+     Path(f"{stem}.verdicts.json").write_text(json.dumps(
+         [v.model_dump(mode="json") for v in verdicts], indent=2))
+     return report
+ 
+ 
+ def main() -> None:
+     from edgar.agent.agent_config import load_agent_config
+     from edgar.agent.llm import AnthropicLLM
+     from edgar.config import get_settings, load_secrets_env
+     from edgar.db import connect
++    from edgar.memory.episodic import create_memory_tables
++    from edgar.tools.compute import create_derivation_table
+     load_secrets_env()
+     cfg = load_agent_config("v1")
+     con = connect(get_settings().duckdb_path)
++    # Real store may predate these tables — temporal_leakage/recompute
++    # read `session`/`derivation` when evaluating an older memo on a
++    # fresh store. Idempotent CREATE IF NOT EXISTS.
++    create_derivation_table(con)
++    create_memory_tables(con)
+     report = evaluate_memo(con, AnthropicLLM(cfg.judge_model),
+                            Path(sys.argv[1]))
+     print(to_markdown(report))
+ 
+ 
+ if __name__ == "__main__":
+     main()
+diff --git a/tests/test_agent_graph.py b/tests/test_agent_graph.py
+index 0036c20..d4e7c31 100644
+--- a/tests/test_agent_graph.py
++++ b/tests/test_agent_graph.py
+@@ -52,10 +52,55 @@ def test_full_run_with_fakes_produces_cited_memo(tmp_path):
+                   LLMTurn("noted", [], [], 1, 1)]
+     memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                 sections=[MemoSection(slug="growth", title="Growth",
+                                       claims=[Claim(text="Revenue was 100",
+                                                     citations=["fA"])])])
+     llm = FakeLLM(turns=turns, parsed=[memo])
+     out = run_agent(cik=1, as_of=date(2023, 6, 1), llm=llm, con=con,
+                     embedder=FakeEmbedder(), out_dir=tmp_path / "memos")
+     assert out.sections[0].claims[0].citations == ["fA"]
+     assert out.session_id and out.trace_id and out.config_version
++
++
++def _con_missing_agent_tables(tmp_path):
++    """F1 regression: mirrors the real store, which has `fact`,
++    `company` and `mapping_rule` (needed by `coverage_node`) but never
++    had `derivation` / `session` / `session_conclusion` / narrative
++    tables created on it. Nothing else in the test suite exercises this
++    — every other `_con()` helper calls all the `create_*` functions
++    explicitly."""
++    con = connect(tmp_path / "real_shaped.duckdb")
++    init_schema(con)
++    create_fact_table(con)
++    create_mapping_table(con)
++    con.execute("""CREATE TABLE company (cik BIGINT, name VARCHAR,
++        sic VARCHAR, sector VARCHAR, fiscal_year_end_month INTEGER,
++        first_filing_date DATE, eligibility_status VARCHAR,
++        exclusion_reason VARCHAR)""")
++    con.execute("INSERT INTO company VALUES (1,'ACME','3571',"
++                "'manufacturing',12,DATE '2019-01-01','eligible',NULL)")
++    return con
++
++
++def test_run_agent_against_real_shaped_store_without_agent_tables(tmp_path):
++    """F1: run_agent must ensure derivation/session/narrative tables
++    itself (idempotent CREATE IF NOT EXISTS) rather than crashing on the
++    real store, which predates them."""
++    con = _con_missing_agent_tables(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    turns = []
++    for _ in range(11):
++        turns += [LLMTurn("", [ToolCall("t", "get_facts",
++                                        {"cik": 1, "fields": ["revenue"],
++                                         "period_start": "2023-01-01",
++                                         "period_end": "2023-03-31"})],
++                          [], 1, 1),
++                  LLMTurn("noted", [], [], 1, 1)]
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[MemoSection(slug="growth", title="Growth",
++                                      claims=[Claim(text="Revenue was 100",
++                                                    citations=["fA"])])])
++    llm = FakeLLM(turns=turns, parsed=[memo])
++    out = run_agent(cik=1, as_of=date(2023, 6, 1), llm=llm, con=con,
++                    embedder=FakeEmbedder(), out_dir=tmp_path / "memos")
++    assert out.sections[0].claims[0].citations == ["fA"]
++    assert out.session_id and out.trace_id and out.config_version
+diff --git a/tests/test_agent_nodes.py b/tests/test_agent_nodes.py
+index 2764518..9b6392c 100644
+--- a/tests/test_agent_nodes.py
++++ b/tests/test_agent_nodes.py
+@@ -203,10 +203,32 @@ def test_emit_persists_session_and_dated_conclusions(tmp_path):
+                 session_id="S1")
+     st = _state(con, memo=memo)
+     st["out_dir"] = tmp_path / "memos"
+     nodes.emit(st)
+     row = con.execute("SELECT cik, as_of_date FROM session").fetchone()
+     assert row == (1, date(2023, 6, 1))
+     c = con.execute("SELECT conclusion, learned_as_of "
+                     "FROM session_conclusion").fetchone()
+     assert c == ("Revenue was 100", date(2023, 6, 1))
+     assert list((tmp_path / "memos").glob("*.md"))
++
++
++def test_emit_writes_latency_s_when_t0_present(tmp_path):
++    """F4: run_agent stashes t0 = time.monotonic() in state before the
++    graph invoke; emit must turn that into a latency_s field in the
++    memo JSON. Absent t0 (e.g. a node test that never sets it), the key
++    is omitted rather than crashing."""
++    import json
++    import time
++
++    con = _con(tmp_path)
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[], config_version="v1+deadbeef", trace_id="tr",
++                session_id="S1")
++    st = _state(con, memo=memo)
++    st["out_dir"] = tmp_path / "memos"
++    st["t0"] = time.monotonic()
++    nodes.emit(st)
++    stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
++    blob = json.loads((st["out_dir"] / f"{stem}.json").read_text())
++    assert "latency_s" in blob
++    assert blob["latency_s"] >= 0.0
+diff --git a/tests/test_judges.py b/tests/test_judges.py
+index 3f84f27..6e08183 100644
+--- a/tests/test_judges.py
++++ b/tests/test_judges.py
+@@ -90,20 +90,35 @@ def test_temporal_leakage_both_surfaces(tmp_path):
+                 "('C-x','s0',1,'future conclusion',DATE '2025-01-01','t')")
+     claims = [RawClaim(claim_text="x", claim_type="NUMERIC",
+                        citations=["fLate"], claimed_value=1.0)]
+     problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1),
+                                 session_id="S1")
+     assert len(problems) == 2
+     assert any("fLate" in p for p in problems)
+     assert any("C-x" in p for p in problems)
+ 
+ 
++def test_temporal_leakage_excludes_fabricated_citation_ids(tmp_path):
++    """Strongly-recommended test from the final whole-branch review:
++    an unknown/fabricated citation id is guardrail territory (caught by
++    citation_resolves), not a temporal leak. `visible_asof` reports it as
++    "unknown identifier ..." and `temporal_leakage`'s `"unknown" not in
++    problem` filter must keep excluding it — pinning the behavior so a
++    future rewording of either message can't silently start counting
++    fabrications as leaks in the MUST-be-zero headline metric."""
++    con = _con(tmp_path)
++    claims = [RawClaim(claim_text="x", claim_type="NUMERIC",
++                       citations=["totally-fake-id"], claimed_value=1.0)]
++    problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1))
++    assert problems == []
++
++
+ def test_temporal_leakage_excludes_derivation_integrity_failures(tmp_path):
+     """I4/visibility split: a derivation whose stored value was tampered
+     with is a guardrail (integrity) violation, not a temporal leak — the
+     MUST-be-zero gate must not be contaminated by it. See
+     test_guardrails.test_derivation_recompute_checked for the guardrail
+     side of this same tamper."""
+     con = _con(tmp_path)
+     _fact(con, fact_id="gp", field="gross_profit", value=40.0)
+     _fact(con, fact_id="rev", field="revenue", value=100.0)
+     d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},

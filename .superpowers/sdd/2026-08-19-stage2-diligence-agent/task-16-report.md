@@ -1,0 +1,4 @@
+# Task 16 report — controller-transcribed (see Task 3 ruling)
+Status: DONE (code). 217 tests pass (8 new). eval/metrics.py (EvalReport + markdown), eval/run_eval.py (evaluate_memo, persists report+verdicts), eval/assets/adversarial.yaml (30 authored cases, 4 traps, all narrative-set ciks), eval/adversarial.py (loader, scorer, runner main), eval/calibration.py (stratified sampler with fixed seed, hand-rolled Cohen's kappa), Makefile eval/adversarial targets.
+Deviation: sample_for_labeling reads *.verdicts.json (persisted by run_eval) rather than report files — the report has aggregates only; the plan's signature said "reports" but the verdict lists are what contain claims. Noted for review.
+Pending-human: real eval run + adversarial sweep (need ANTHROPIC_API_KEY); the 150-claim labeling itself is spec task 2.6 (author's work).

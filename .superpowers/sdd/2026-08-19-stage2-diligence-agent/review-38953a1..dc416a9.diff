@@ -1,0 +1,3965 @@
+# Review package: 38953a1..dc416a9
+
+## Commits
+dc416a9 feat(eval): metrics, adversarial set, kappa calibration harness
+6feb2f7 feat(eval): decomposition + typed judges + dual-surface temporal check
+95b9e58 feat(agent): section loop, LangGraph wiring, CLI
+29cb9bf feat(agent): LLMClient protocol with Anthropic adapter and scripted fake
+a40cd1f feat(agent): structured memo + deterministic reply-path guardrails
+b53a1ad feat(agent): evidence ledger; compaction preserves identifiers verbatim
+a1c4866 feat(agent): procedural rubrics + hash-versioned config (spec 9.2)
+f5316ed feat(ops): Tracer protocol with Langfuse adapter and noop fallback
+1f123ab feat(memory): dated episodic store with learned_as_of recall guard
+e116a43 feat(narrative): offset-preserving chunks, hybrid as-of search
+c6cffcb feat(narrative): 10-K item store + fetch (library-first, script-isolated)
+a3820d2 feat(tools): get_peer_set with recorded selection rule
+3585a7b feat(tools): compute with derivation records; additive type-mixing rule
+157d552 feat(tools): DTO schemas, get_facts, list_available_facts
+
+## Files changed
+ Makefile                                           |  22 +++
+ config/versions/v1.yaml                            |   8 ++
+ .../2026-08-18-cited-diligence-agent-design.md     |   8 +-
+ prompts/sections/business.md                       |  14 ++
+ prompts/sections/capital_intensity.md              |  17 +++
+ prompts/sections/cash_quality.md                   |  17 +++
+ prompts/sections/growth.md                         |  18 +++
+ prompts/sections/leverage.md                       |  21 +++
+ prompts/sections/management.md                     |  20 +++
+ prompts/sections/peers.md                          |  17 +++
+ prompts/sections/profitability.md                  |  21 +++
+ prompts/sections/reliability.md                    |  19 +++
+ prompts/sections/unanswered.md                     |  19 +++
+ prompts/sections/working_capital.md                |  19 +++
+ prompts/system.md                                  |  31 ++++
+ scripts/fetch_narratives.py                        |  75 ++++++++++
+ src/edgar/agent/__init__.py                        |   0
+ src/edgar/agent/agent_config.py                    |  33 +++++
+ src/edgar/agent/graph.py                           |  64 +++++++++
+ src/edgar/agent/guardrails.py                      | 108 ++++++++++++++
+ src/edgar/agent/ledger.py                          |  45 ++++++
+ src/edgar/agent/llm.py                             |  96 +++++++++++++
+ src/edgar/agent/memo.py                            |  57 ++++++++
+ src/edgar/agent/nodes.py                           | 159 +++++++++++++++++++++
+ src/edgar/agent/run.py                             |  27 ++++
+ src/edgar/agent/tool_defs.py                       | 103 +++++++++++++
+ src/edgar/eval/__init__.py                         |   0
+ src/edgar/eval/adversarial.py                      |  89 ++++++++++++
+ src/edgar/eval/assets/adversarial.yaml             |  33 +++++
+ src/edgar/eval/calibration.py                      |  60 ++++++++
+ src/edgar/eval/decompose.py                        |  27 ++++
+ src/edgar/eval/judges.py                           | 127 ++++++++++++++++
+ src/edgar/eval/metrics.py                          |  73 ++++++++++
+ src/edgar/eval/run_eval.py                         |  54 +++++++
+ src/edgar/eval/schemas.py                          |  49 +++++++
+ src/edgar/memory/__init__.py                       |   0
+ src/edgar/memory/episodic.py                       |  73 ++++++++++
+ src/edgar/memory/procedural.py                     |  27 ++++
+ src/edgar/narrative/__init__.py                    |   0
+ src/edgar/narrative/embedder.py                    |  38 +++++
+ src/edgar/narrative/fetch.py                       |  77 ++++++++++
+ src/edgar/narrative/store.py                       | 137 ++++++++++++++++++
+ src/edgar/ops/__init__.py                          |   0
+ src/edgar/ops/tracing.py                           |  92 ++++++++++++
+ src/edgar/tools/__init__.py                        |   0
+ src/edgar/tools/compute.py                         | 139 ++++++++++++++++++
+ src/edgar/tools/facts_tools.py                     |  69 +++++++++
+ src/edgar/tools/peers.py                           |  44 ++++++
+ src/edgar/tools/schemas.py                         |  81 +++++++++++
+ tests/test_adversarial.py                          |  46 ++++++
+ tests/test_agent_config.py                         |  20 +++
+ tests/test_agent_graph.py                          |  61 ++++++++
+ tests/test_agent_nodes.py                          | 149 +++++++++++++++++++
+ tests/test_calibration.py                          |  30 ++++
+ tests/test_compute.py                              |  90 ++++++++++++
+ tests/test_decompose.py                            |  20 +++
+ tests/test_episodic.py                             |  56 ++++++++
+ tests/test_facts_tools.py                          |  62 ++++++++
+ tests/test_guardrails.py                           |  87 +++++++++++
+ tests/test_judges.py                               |  97 +++++++++++++
+ tests/test_ledger.py                               |  42 ++++++
+ tests/test_llm.py                                  |  36 +++++
+ tests/test_memo.py                                 |  32 +++++
+ tests/test_metrics.py                              |  43 ++++++
+ tests/test_narrative_fetch.py                      |  49 +++++++
+ tests/test_narrative_search.py                     |  76 ++++++++++
+ tests/test_peers.py                                |  62 ++++++++
+ tests/test_procedural.py                           |  19 +++
+ tests/test_tracing.py                              |  25 ++++
+ 69 files changed, 3428 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/Makefile b/Makefile
+index de58931..e571e21 100644
+--- a/Makefile
++++ b/Makefile
+@@ -7,10 +7,32 @@ test:
+ 	pytest -v
+ 
+ build:
+ 	python -m edgar.pipeline
+ 
+ rebuild-curated:
+ 	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.pipeline import rebuild_curated; import json; print(json.dumps(rebuild_curated(connect(get_settings().duckdb_path)), indent=2, default=str))"
+ 
+ clean:
+ 	rm -rf data/edgar.duckdb
++
++narrative:
++	venv/bin/pip install -q -e ".[narrative]"
++	venv/bin/python scripts/fetch_narratives.py
++
++index:
++	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.narrative.store import index_spans; from edgar.narrative.embedder import SentenceTransformerEmbedder; print(index_spans(connect(get_settings().duckdb_path), SentenceTransformerEmbedder()), 'spans indexed')"
++
++langfuse-up:
++	@test -d ../langfuse || git clone https://github.com/langfuse/langfuse.git ../langfuse
++	cd ../langfuse && docker compose up -d
++	@echo "Langfuse at http://localhost:3000 — create an org/project, then put"
++	@echo "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST=http://localhost:3000 in .env"
++
++memo:
++	venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
++
++eval:
++	venv/bin/python -m edgar.eval.run_eval $(MEMO)
++
++adversarial:
++	venv/bin/python -m edgar.eval.adversarial
+diff --git a/config/versions/v1.yaml b/config/versions/v1.yaml
+new file mode 100644
+index 0000000..0f94266
+--- /dev/null
++++ b/config/versions/v1.yaml
+@@ -0,0 +1,8 @@
++generation_model: claude-opus-5
++judge_model: claude-sonnet-5
++retrieval_k: 8
++max_tool_turns: 12          # per section; hard stop on the retrieve loop
++max_repair_rounds: 2        # guardrail repair attempts before downgrade-all
++context_budget_chars: 60000 # ledger render budget fed to the memo writer
++compaction_threshold_chars: 45000
++recall_limit: 5             # episodic conclusions loaded per run
+diff --git a/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md b/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
+index 9604988..d0d48ca 100644
+--- a/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
++++ b/docs/superpowers/specs/2026-08-18-cited-diligence-agent-design.md
+@@ -446,21 +446,23 @@ All tools take `as_of` and enforce it in SQL. The agent cannot opt out. Schemas
+ 
+ ```python
+ get_facts(cik, fields: list[str], period_start, period_end, as_of) -> list[Fact]
+     # Missing values return a status from the §4.6 taxonomy, never silence.
+ 
+ search_filings(cik, query, as_of, sections=None, k=8) -> list[Span]
+ 
+ compute(expression: str, inputs: dict[str, str]) -> Computation
+     # inputs maps variable names to fact_ids.
+     # Returns value + derivation_id + full substitution record.
+-    # Rejects duration/instant mixing and cross-fiscal-calendar comparison.
++    # Rejects additive (+/-) mixing of duration and instant operands and
++    # cross-fiscal-calendar comparison; ratios across period types are
++    # permitted (asset turnover and days metrics require them). [rev 3a]
+ 
+ get_peer_set(cik, as_of, min_peers=10) -> PeerSet
+     # SIC-based, calendar-aligned, selection rule recorded.
+ 
+ list_available_facts(cik, as_of) -> CoverageMap
+     # Which canonical fields exist for which periods, with status codes.
+ ```
+ 
+ ### Two load-bearing design decisions
+ 
+@@ -881,20 +883,24 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
+ - Every run has a trace, and every memo links to it
+ 
+ **Stage 3 succeeds if:**
+ - A config change that regresses groundedness is blocked by the gate before release
+ - The third memo for a company costs measurably fewer tokens than the first
+ 
+ ---
+ 
+ ## 16. Revision log
+ 
++### rev 3a — 2026-08-20 · compute type rule refined (Task 4)
++
++§6's blanket "rejects duration/instant mixing" would make the memo template's own sections 5-6 uncomputable — asset turnover is revenue (duration) / assets (instant); every days-metric is an instant/duration ratio. Enforceable invariant: + and − require like period types; × and ÷ may cross. Additive mixing is the modeling bug the rule exists to stop.
++
+ ### rev 3 — 2026-08-19 · Stage 2 design revision
+ 
+ Stage 1 shipped (merge `99dc356`) before Stage 2 began. Three decisions were re-opened against the as-built system and settled.
+ 
+ **1. Memory reduced from three tiers to two.** §2, §7.4, §7.5, §12.
+ 
+ The semantic tier and consolidation agent were the costly parts — embedding store, retrieval tuning, a second LLM pipeline — and neither is required by the property that makes memory valuable here. The dated-recall leakage guarantee ("a memo run at as-of D must not surface a conclusion formed after D") needs a SQL predicate, not a vector index. Episodic memory therefore ships in Stage 2 as a plain DuckDB table with SQL retrieval; semantic and consolidation move to Stage 3.
+ 
+ *Retained:* the second temporal-leakage surface, and its eval metric.
+ *Given up:* the token-savings result (third memo cheaper than the first), which requires consolidation and was already a Stage 3 success criterion.
+diff --git a/prompts/sections/business.md b/prompts/sections/business.md
+new file mode 100644
+index 0000000..4603e54
+--- /dev/null
++++ b/prompts/sections/business.md
+@@ -0,0 +1,14 @@
++# Section: Business description
++
++Question: what does this company do, and how does it make money?
++
++Sources: `search_filings` over Item 1 only (`items=["Item 1"]`). Query for
++the business model, segments as described in prose, and customer base.
++
++Every statement here is ATTRIBUTED — it reports what the filing says, and
++cites span_ids. Do not state numbers in this section unless they came from
++`get_facts` with a fact_id; prefer to leave quantities to later sections.
++
++If no Item 1 spans are available (narrative store may not cover this
++company or period): set the section to status_code with a note that the
++narrative store has no Item 1 text as of the cutoff.
+diff --git a/prompts/sections/capital_intensity.md b/prompts/sections/capital_intensity.md
+new file mode 100644
+index 0000000..ea54cc2
+--- /dev/null
++++ b/prompts/sections/capital_intensity.md
+@@ -0,0 +1,17 @@
++# Section: Capital intensity
++
++Question: how much must the company spend on long-lived assets to run and
++grow, and how efficiently do assets generate revenue?
++
++Fields: `capex`, `revenue` (durations); `total_assets` (instant).
++Latest 8 quarters.
++
++Computations (via `compute`; the turnover ratio mixes duration and
++instant by design — that is allowed for ratios):
++- Capex intensity: `capex / revenue` per period.
++- Asset turnover:  `revenue / total_assets` using the quarter-end
++  total_assets for the same quarter.
++
++State the trend across periods, citing derivations. High and rising capex
++intensity with flat revenue is the pattern to flag. If capex is missing,
++report the status code.
+diff --git a/prompts/sections/cash_quality.md b/prompts/sections/cash_quality.md
+new file mode 100644
+index 0000000..eb26ff7
+--- /dev/null
++++ b/prompts/sections/cash_quality.md
+@@ -0,0 +1,17 @@
++# Section: Cash quality
++
++Question: does reported profit turn into actual cash?
++
++Fields: `net_income`, `operating_cash_flow`, `capex` (durations).
++Latest 8 quarters.
++
++Computations (via `compute`, citing derivation_ids):
++- Accrual gap: `operating_cash_flow - net_income` per period — a
++  persistently negative gap (cash below profit) is the classic warning.
++- Free cash flow: `operating_cash_flow - capex` per period.
++- FCF conversion: `(operating_cash_flow - capex) / net_income` where
++  net_income is positive.
++
++State whether the gap is widening or narrowing across periods, citing the
++per-period derivations. If any field is missing, report its status code
++and compute what remains.
+diff --git a/prompts/sections/growth.md b/prompts/sections/growth.md
+new file mode 100644
+index 0000000..e430361
+--- /dev/null
++++ b/prompts/sections/growth.md
+@@ -0,0 +1,18 @@
++# Section: Growth
++
++Question: is revenue growing, and is growth accelerating or decelerating?
++
++Fields: `revenue` (duration). Pull 8-12 quarters via `get_facts`.
++
++Computations (all via `compute`, citing derivation_ids):
++- YoY growth for the latest 4 quarters: `(rev_t - rev_t4) / rev_t4`
++- Sequential trend: compare consecutive YoY rates; state whether the
++  growth rate is rising or falling — cite both derivations.
++
++Watch for: fiscal-year boundaries (use period_start/period_end, not labels);
++a revenue restatement visible as multiple filed versions of one period —
++if present, mention it and let section 10 elaborate.
++
++If revenue is missing or AMBIGUOUS for recent periods: report the status
++code and write what can be said from older periods, or set the section to
++status_code if nothing is producible.
+diff --git a/prompts/sections/leverage.md b/prompts/sections/leverage.md
+new file mode 100644
+index 0000000..e3b810b
+--- /dev/null
++++ b/prompts/sections/leverage.md
+@@ -0,0 +1,21 @@
++# Section: Balance sheet and leverage
++
++Question: how much does the company owe, and how does its debt compare to
++its equity and cash?
++
++Fields: `long_term_debt`, `cash_and_equivalents`, `stockholders_equity`,
++`total_liabilities` (instants). Latest 4-8 quarter-ends.
++
++Computations (via `compute`, citing derivation_ids):
++- Debt to equity: `long_term_debt / stockholders_equity`
++- Net debt:       `long_term_debt - cash_and_equivalents`
++
++Caveat you must state when citing long_term_debt: the field excludes
++short-term borrowings by construction, and when the company files only
++the noncurrent tag it also excludes current maturities — see the data
++dictionary. Do not call it "total debt".
++
++If long_term_debt is NOT_DISCLOSED, the company may simply carry no
++long-term debt — say exactly that with the status code, and note
++total_liabilities (which conflates debt with operating obligations) as
++the only available aggregate, cited.
+diff --git a/prompts/sections/management.md b/prompts/sections/management.md
+new file mode 100644
+index 0000000..b9caff5
+--- /dev/null
++++ b/prompts/sections/management.md
+@@ -0,0 +1,20 @@
++# Section: Management's explanation and new risk factors
++
++Question: how does management explain the results, and what risks do they
++flag?
++
++Sources: `search_filings` over Item 7 (`items=["Item 7"]`) for the
++explanation of results — pricing, costs, demand, one-offs; and Item 1A
++(`items=["Item 1A"]`) for risk factors.
++
++Every statement here is ATTRIBUTED: "Management cited X [span_id]". Quote
++or closely paraphrase; do not editorialize inside attributed claims. An
++interpretation of what management said is a separate INFERENTIAL claim
++citing the same spans.
++
++For risk factors: only claim a risk is NEW if you have spans from two
++different filings supporting the comparison (present in the later, absent
++in the earlier search results). Otherwise describe the risks without
++claiming novelty.
++
++If no spans are available, set the section to status_code.
+diff --git a/prompts/sections/peers.md b/prompts/sections/peers.md
+new file mode 100644
+index 0000000..59ce8d1
+--- /dev/null
++++ b/prompts/sections/peers.md
+@@ -0,0 +1,17 @@
++# Section: Peer positioning
++
++Question: how do this company's economics compare to similar companies?
++
++Tools: `get_peer_set` first — it returns the peer list AND the selection
++rule; quote the rule in the section so the reader knows how peers were
++chosen. Then `get_facts` for 2-3 peers and the subject, and `compute` one
++or two comparable ratios (gross margin and capex intensity are good
++defaults).
++
++Calendar alignment is enforced by `compute`: cross-company inputs must
++share a calendar quarter. If a peer's fiscal calendar does not align
++(compute rejects it), say so rather than forcing the comparison — note
++the peer's fiscal_year_end_month from the peer set.
++
++Keep it to 2-3 peers and 1-2 ratios, every number cited. If the peer set
++is empty, report that with the selection rule that produced it.
+diff --git a/prompts/sections/profitability.md b/prompts/sections/profitability.md
+new file mode 100644
+index 0000000..9b84e02
+--- /dev/null
++++ b/prompts/sections/profitability.md
+@@ -0,0 +1,21 @@
++# Section: Profitability
++
++Question: how profitable is the company, and where in the cost stack is
++pressure showing up?
++
++Fields: `revenue`, `gross_profit`, `operating_income`, `net_income`
++(durations). Latest 8 quarters.
++
++Computations (via `compute`, citing derivation_ids):
++- Gross margin:     `gross_profit / revenue`
++- Operating margin: `operating_income / revenue`
++- Net margin:       `net_income / revenue`
++Compute each for at least the latest and year-ago quarters. Locate the
++pressure: if gross margin is stable but operating margin fell, the issue
++is operating costs, not input costs — state which layer moved, citing the
++derivations for both periods.
++
++If `gross_profit` is NOT_DISCLOSED (common), say so with the status code
++and work with operating and net margins only. Do not derive gross profit
++from revenue minus cost_of_revenue unless both fact_ids exist — and if
++you do, that subtraction goes through `compute` like everything else.
+diff --git a/prompts/sections/reliability.md b/prompts/sections/reliability.md
+new file mode 100644
+index 0000000..22dc048
+--- /dev/null
++++ b/prompts/sections/reliability.md
+@@ -0,0 +1,19 @@
++# Section: Data reliability flags
++
++Question: how trustworthy are this company's reported figures — do they
++restate, and how late do they file?
++
++Method: `get_facts` results carry filed_date and accession per fact.
++When the same figure (same field, same period_start/period_end, same
++unit) appears with MULTIPLE filed versions in your evidence, that is a
++restatement trail: cite BOTH fact_ids and state the values and filing
++dates. The bitemporal store preserves every version precisely so this
++section can exist.
++
++Also observe filing lag: the gap between period_end and filed_date on
++the facts you retrieved — flag a company whose lag is long or worsening,
++citing the fact_ids whose dates show it.
++
++No restatements observed in the evidence gathered is itself a statement
++worth making — phrase it as scoped to the periods examined, not as a
++blanket claim.
+diff --git a/prompts/sections/unanswered.md b/prompts/sections/unanswered.md
+new file mode 100644
+index 0000000..c7c188e
+--- /dev/null
++++ b/prompts/sections/unanswered.md
+@@ -0,0 +1,19 @@
++# Section: What could not be answered
++
++Question: what did the store fail to provide for this memo?
++
++Method: enumerate every non-AVAILABLE status you encountered in this run —
++from the coverage map loaded at the start and from every get_facts call
++that returned a missing-field status. One line per field: the field, the
++status code, and the §4.6 meaning:
++- NOT_DISCLOSED — the company does not report this concept
++- NOT_YET_FILED — it exists today but was not public at the cutoff
++- UNMAPPED — the company reports something related our mapping misses
++- AMBIGUOUS — candidate tags disagree; unresolved
++
++NOT_DISCLOSED is a claim about the company; UNMAPPED is a claim about
++this system. Never phrase the second as the first.
++
++This section is the honesty surface. It is never empty if any other
++section hit a gap, and it needs no citations — status codes are the
++content.
+diff --git a/prompts/sections/working_capital.md b/prompts/sections/working_capital.md
+new file mode 100644
+index 0000000..bce72cd
+--- /dev/null
++++ b/prompts/sections/working_capital.md
+@@ -0,0 +1,19 @@
++# Section: Working capital
++
++Question: how much cash is trapped in the operating cycle, and is the
++trend improving or worsening?
++
++Fields: `inventory`, `accounts_receivable`, `accounts_payable` (instants);
++`revenue`, `cost_of_revenue` (durations). Latest 4-8 quarters.
++
++Computations (via `compute`; instant/duration ratios are expected here):
++- Days inventory:  `inventory / cost_of_revenue * 91`
++- Days receivable: `accounts_receivable / revenue * 91`
++- Days payable:    `accounts_payable / cost_of_revenue * 91`
++Use quarter-aligned inputs (same period_end for the instant and the
++quarter the duration covers). Compute for at least two periods and state
++the direction of travel, citing every derivation.
++
++If `cost_of_revenue` is missing (common: ~half of filers), say so with its
++status code and compute only days receivable; do not substitute revenue
++into the inventory/payable formulas.
+diff --git a/prompts/system.md b/prompts/system.md
+new file mode 100644
+index 0000000..18bc89b
+--- /dev/null
++++ b/prompts/system.md
+@@ -0,0 +1,31 @@
++# Diligence analyst — operating rules
++
++You are a financial diligence analyst writing about ONE public company as
++of a FIXED cutoff date (the `as_of` date). You work only from tool
++results. Every tool enforces `as_of` in the database; you will simply
++never see later information.
++
++## The three laws
++
++1. **Every numeric or attributed statement carries a citation.** A citation
++   is an identifier copied VERBATIM from a tool result: a `fact_id`, a
++   `span_id`, or a `derivation_id`. Never invent, abbreviate, or repair an
++   identifier. A statement you cannot cite is a hypothesis and must be
++   labeled as one.
++2. **You do no arithmetic.** Every growth rate, margin, ratio, delta, and
++   difference — however trivial — goes through the `compute` tool over
++   fact_ids, and you cite the returned derivation_id. This includes percent
++   changes you could do in your head.
++3. **What the tools cannot show does not exist.** When the coverage map
++   reports a field as NOT_DISCLOSED, NOT_YET_FILED, UNMAPPED, or AMBIGUOUS,
++   report that status code. Never estimate, interpolate, or fill from
++   general knowledge. "I cannot answer this from the store" is a correct
++   and expected answer.
++
++## Style
++
++Terse and factual. No superlatives, no filler. One assertion per claim.
++Prefer exact figures with units over rounded prose. Distinguish what the
++data shows from what management says (attributed) and from what you infer
++(inferential — cite the premises). Value-creation ideas go in the
++hypotheses list, labeled, never asserted as fact.
+diff --git a/scripts/fetch_narratives.py b/scripts/fetch_narratives.py
+new file mode 100644
+index 0000000..f7b6dbf
+--- /dev/null
++++ b/scripts/fetch_narratives.py
+@@ -0,0 +1,75 @@
++"""Fetch 10-K Items 1 / 1A / 7 for the narrative company set via edgartools.
++
++Runs OUTSIDE pythonpath=src so `import edgar` resolves to the edgartools
++package (name collision with this project's src/edgar). Uses edgartools
++only — no import of the project package. Config is read directly from
++.env / environment: EDGAR_DUCKDB_PATH, EDGAR_SEC_USER_AGENT.
++
++Usage: venv/bin/python scripts/fetch_narratives.py
++"""
++import hashlib
++import os
++import sys
++from pathlib import Path
++
++sys.path = [p for p in sys.path if not p.rstrip("/").endswith("/src")]
++
++NARRATIVE_CIKS = [320193, 789019, 1045810, 1318605, 77476,
++                  200406, 354950, 909832, 1018724, 1652044]
++ITEMS = ("Item 1", "Item 1A", "Item 7")
++PER_COMPANY = 4
++
++
++def _env(key: str, default: str) -> str:
++    if key in os.environ:
++        return os.environ[key]
++    env_file = Path(".env")
++    if env_file.exists():
++        for line in env_file.read_text().splitlines():
++            line = line.strip()
++            if line.startswith(f"{key}="):
++                return line.partition("=")[2].strip()
++    return default
++
++
++def main() -> None:
++    import duckdb
++    from edgar import Company, set_identity          # edgartools
++
++    set_identity(_env("EDGAR_SEC_USER_AGENT",
++                      "Robert McCourt rmmccourt01@comcast.net"))
++    db_path = _env("EDGAR_DUCKDB_PATH", "data/edgar.duckdb")
++    con = duckdb.connect(db_path)
++    con.execute("""
++        CREATE TABLE IF NOT EXISTS narrative_doc (
++            doc_id VARCHAR PRIMARY KEY,
++            cik BIGINT, accession VARCHAR, form VARCHAR, filed_date DATE,
++            fiscal_year VARCHAR, item VARCHAR, text VARCHAR)""")
++    total = 0
++    for cik in NARRATIVE_CIKS:
++        filings = Company(cik).get_filings(form="10-K").head(PER_COMPANY)
++        for f in filings:
++            tenk = f.obj()
++            for item in ITEMS:
++                try:
++                    text = tenk[item]
++                except (KeyError, TypeError):
++                    text = None
++                if not text:
++                    print(f"WARN cik={cik} {f.accession_no}: {item} empty")
++                    continue
++                doc_id = hashlib.sha256(
++                    f"{f.accession_no}|{item}".encode()).hexdigest()[:16]
++                con.execute(
++                    "INSERT OR REPLACE INTO narrative_doc VALUES "
++                    "(?,?,?,?,?,?,?,?)",
++                    [doc_id, cik, f.accession_no, "10-K", f.filing_date,
++                     str(getattr(f, "fiscal_year", "") or
++                         f.filing_date.year), item, str(text)])
++                total += 1
++        print(f"cik {cik}: done")
++    print(f"{total} item-documents stored in {db_path}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/edgar/agent/__init__.py b/src/edgar/agent/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/agent/agent_config.py b/src/edgar/agent/agent_config.py
+new file mode 100644
+index 0000000..b35d814
+--- /dev/null
++++ b/src/edgar/agent/agent_config.py
+@@ -0,0 +1,33 @@
++import hashlib
++from pathlib import Path
++
++import yaml
++from pydantic import BaseModel, ConfigDict
++
++
++class AgentConfig(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    name: str
++    generation_model: str
++    judge_model: str
++    retrieval_k: int
++    max_tool_turns: int
++    max_repair_rounds: int
++    context_budget_chars: int
++    compaction_threshold_chars: int
++    recall_limit: int
++    prompts_sha: str
++    config_version: str
++
++
++def load_agent_config(name: str = "v1", root: Path | None = None) -> AgentConfig:
++    root = root or Path(".")
++    yaml_path = root / "config" / "versions" / f"{name}.yaml"
++    raw = yaml_path.read_bytes()
++    data = yaml.safe_load(raw)
++    h = hashlib.sha256(raw)
++    for p in sorted((root / "prompts").rglob("*.md")):
++        h.update(p.read_bytes())
++    digest = h.hexdigest()[:8]
++    return AgentConfig(name=name, prompts_sha=digest,
++                       config_version=f"{name}+{digest}", **data)
+diff --git a/src/edgar/agent/graph.py b/src/edgar/agent/graph.py
+new file mode 100644
+index 0000000..230bf79
+--- /dev/null
++++ b/src/edgar/agent/graph.py
+@@ -0,0 +1,64 @@
++from datetime import date
++from pathlib import Path
++
++from langgraph.graph import END, START, StateGraph
++
++from edgar.agent import nodes
++from edgar.agent.agent_config import load_agent_config
++from edgar.agent.ledger import EvidenceLedger
++from edgar.agent.memo import Memo
++
++
++def build_graph():
++    g = StateGraph(dict)
++    for name in ("load_memory", "coverage_node", "plan_node",
++                 "retrieve_section", "compact_node", "write_memo",
++                 "guardrail_node", "repair_node", "emit"):
++        g.add_node(name, getattr(nodes, name))
++    g.add_edge(START, "load_memory")
++    g.add_edge("load_memory", "coverage_node")
++    g.add_edge("coverage_node", "plan_node")
++    g.add_edge("plan_node", "retrieve_section")
++    g.add_edge("retrieve_section", "compact_node")
++    g.add_conditional_edges(
++        "compact_node",
++        lambda s: "retrieve_section" if s["section_idx"] < len(s["plan"])
++        else "write_memo")
++    g.add_edge("write_memo", "guardrail_node")
++    g.add_conditional_edges(
++        "guardrail_node",
++        lambda s: "emit" if not s["guardrail_report"].rejection_count
++        or s["repair_round"] >= s["config"].max_repair_rounds
++        else "repair_node")
++    g.add_edge("repair_node", "guardrail_node")
++    g.add_edge("emit", END)
++    return g.compile()
++
++
++def run_agent(*, cik: int, as_of: date, question: str | None = None,
++              config=None, llm=None, embedder=None, tracer=None,
++              con=None, out_dir: Path = Path("data/memos")) -> Memo:
++    from edgar.ops.tracing import make_tracer
++    cfg = config or load_agent_config("v1")
++    if con is None:
++        from edgar.db import connect
++        con = connect()
++    if llm is None:
++        from edgar.agent.llm import AnthropicLLM
++        llm = AnthropicLLM(cfg.generation_model)
++    if embedder is None:
++        from edgar.narrative.embedder import SentenceTransformerEmbedder
++        embedder = SentenceTransformerEmbedder()
++    tracer = tracer or make_tracer(f"memo-{cik}-{as_of}")
++    row = con.execute("SELECT name FROM company WHERE cik = ?",
++                      [cik]).fetchone()
++    state = dict(cik=cik, as_of=as_of, question=question, config=cfg,
++                 con=con, llm=llm, embedder=embedder, tracer=tracer,
++                 ledger=EvidenceLedger(), coverage=None, plan=[],
++                 section_idx=0, memo=None, guardrail_report=None,
++                 repair_round=0, conclusions=[], recalled_ids=[],
++                 usage={"in": 0, "out": 0},
++                 company_name=row[0] if row else f"CIK {cik}",
++                 out_dir=out_dir)
++    final = build_graph().invoke(state)
++    return final["memo"]
+diff --git a/src/edgar/agent/guardrails.py b/src/edgar/agent/guardrails.py
+new file mode 100644
+index 0000000..d44b0d8
+--- /dev/null
++++ b/src/edgar/agent/guardrails.py
+@@ -0,0 +1,108 @@
++import re
++from datetime import date
++
++import duckdb
++from pydantic import BaseModel
++
++from edgar.agent.memo import Claim, Memo
++from edgar.tools.compute import ComputeError, recompute
++
++_NUMERIC = re.compile(
++    r"(\d[\d,.]*\s*(%|bps|bn|billion|million|x\b)|[$€£]\s*\d|\d{3,})",
++    re.IGNORECASE)
++
++
++def _is_numeric_claim(text: str) -> bool:
++    return bool(_NUMERIC.search(text))
++
++
++class Violation(BaseModel):
++    section: str
++    claim_text: str
++    rule: str
++    detail: str
++
++
++class GuardrailReport(BaseModel):
++    violations: list[Violation]
++    checked_claims: int
++    rejection_count: int
++
++
++def _visible(con, cid: str, as_of: date) -> str | None:
++    """Return None when the id exists and is visible as of as_of,
++    else a human-readable problem."""
++    if cid.startswith("D-"):
++        row = con.execute("SELECT as_of, value FROM derivation "
++                          "WHERE derivation_id = ?", [cid]).fetchone()
++        if row is None:
++            return f"unknown derivation {cid}"
++        if row[0] > as_of:
++            return f"derivation {cid} computed for later as_of {row[0]}"
++        try:
++            again = recompute(con, cid)
++        except ComputeError as exc:
++            return f"derivation {cid} does not recompute: {exc}"
++        if abs(again.value - row[1]) > 1e-9 * max(1.0, abs(row[1])):
++            return (f"derivation {cid} stored {row[1]} but recomputes "
++                    f"to {again.value}")
++        return None
++    for table, col in (("fact", "fact_id"), ("span", "span_id")):
++        row = con.execute(
++            f"SELECT filed_date FROM {table} WHERE {col} = ?",
++            [cid]).fetchone()
++        if row is not None:
++            return None if row[0] <= as_of else \
++                f"{table} {cid} filed {row[0]} after as_of {as_of}"
++    return f"unknown identifier {cid}"
++
++
++def check_memo(con: duckdb.DuckDBPyConnection, memo: Memo,
++               as_of: date) -> GuardrailReport:
++    violations: list[Violation] = []
++    checked = 0
++
++    def _check(claim: Claim, section: str, citation_required: bool) -> None:
++        nonlocal checked
++        checked += 1
++        if citation_required and not claim.citations and \
++                _is_numeric_claim(claim.text):
++            violations.append(Violation(
++                section=section, claim_text=claim.text,
++                rule="needs_citation",
++                detail="numeric claim with no citation"))
++            return
++        for cid in claim.citations:
++            problem = _visible(con, cid, as_of)
++            if problem is None:
++                continue
++            rule = ("derivation_recomputes"
++                    if cid.startswith("D-") and "recompute" in problem
++                    else "citation_resolves")
++            violations.append(Violation(section=section,
++                                        claim_text=claim.text,
++                                        rule=rule, detail=problem))
++
++    for s in memo.sections:
++        if s.status != "content":
++            continue
++        for claim in s.claims:
++            _check(claim, s.slug, citation_required=not claim.is_hypothesis)
++    for claim in memo.hypotheses:
++        _check(claim, "hypotheses", citation_required=False)
++    return GuardrailReport(violations=violations, checked_claims=checked,
++                           rejection_count=len(violations))
++
++
++def repair_memo(memo: Memo, report: GuardrailReport) -> Memo:
++    """Downgrade, never delete (spec §7.3). Failing claims become labeled
++    hypotheses in place; rejection stays visible in the memo itself."""
++    bad = {(v.section, v.claim_text) for v in report.violations}
++    fixed = memo.model_copy(deep=True)
++    for s in fixed.sections:
++        for c in s.claims:
++            if (s.slug, c.text) in bad:
++                c.is_hypothesis = True
++                c.text = "[UNVERIFIED — downgraded by guardrail] " + c.text
++                c.citations = []
++    return fixed
+diff --git a/src/edgar/agent/ledger.py b/src/edgar/agent/ledger.py
+new file mode 100644
+index 0000000..b36f29e
+--- /dev/null
++++ b/src/edgar/agent/ledger.py
+@@ -0,0 +1,45 @@
++from dataclasses import dataclass, field
++
++_GIST_CAP = 200
++
++
++@dataclass
++class LedgerEntry:
++    kind: str
++    identifier: str
++    gist: str
++    section: str
++    payload: str = ""
++
++
++@dataclass
++class EvidenceLedger:
++    """Typed working memory (spec §7.1). The memo is written FROM this,
++    which is what makes post-hoc auditing possible."""
++    entries: list[LedgerEntry] = field(default_factory=list)
++
++    def append(self, entry: LedgerEntry) -> None:
++        self.entries.append(entry)
++
++    def identifiers(self) -> set[str]:
++        return {e.identifier for e in self.entries if e.identifier}
++
++    def size_chars(self) -> int:
++        return sum(len(e.gist) + len(e.payload) for e in self.entries)
++
++    def compact(self) -> int:
++        """Compress prose; NEVER compress identifiers (spec §7.2).
++        A compaction that drops a citation is a bug, not a tradeoff."""
++        before = self.size_chars()
++        for e in self.entries:
++            e.payload = ""
++            if len(e.gist) > _GIST_CAP:
++                e.gist = e.gist[:_GIST_CAP - 1] + "…"
++        return before - self.size_chars()
++
++    def render(self, section: str | None = None) -> str:
++        rows = [e for e in self.entries
++                if section is None or e.section == section]
++        return "\n".join(
++            f"[{e.identifier}] ({e.kind}, §{e.section}) {e.gist}"
++            for e in rows)
+diff --git a/src/edgar/agent/llm.py b/src/edgar/agent/llm.py
+new file mode 100644
+index 0000000..bf78e11
+--- /dev/null
++++ b/src/edgar/agent/llm.py
+@@ -0,0 +1,96 @@
++from dataclasses import dataclass, field
++from typing import Protocol
++
++from pydantic import BaseModel
++
++
++class LLMError(RuntimeError):
++    pass
++
++
++@dataclass(frozen=True)
++class ToolCall:
++    id: str
++    name: str
++    input: dict
++
++
++@dataclass(frozen=True)
++class LLMTurn:
++    text: str
++    tool_calls: list[ToolCall]
++    raw_content: object
++    usage_in: int
++    usage_out: int
++
++
++class LLMClient(Protocol):
++    def tool_turn(self, *, system: str, messages: list[dict],
++                  tools: list[dict]) -> LLMTurn: ...
++    def parse_structured(self, *, system: str, prompt: str,
++                         output_model: type[BaseModel]) -> BaseModel: ...
++
++
++class AnthropicLLM:
++    """Thin provider adapter. Thinking parameter deliberately omitted:
++    claude-opus-5 / claude-sonnet-5 run adaptive thinking by default and
++    reject budget_tokens with a 400."""
++
++    def __init__(self, model: str, max_tokens: int = 16000):
++        import anthropic
++        self._anthropic = anthropic
++        self._client = anthropic.Anthropic()
++        self._model = model
++        self._max_tokens = max_tokens
++
++    def tool_turn(self, *, system, messages, tools) -> LLMTurn:
++        try:
++            resp = self._client.messages.create(
++                model=self._model, max_tokens=self._max_tokens,
++                system=system, tools=tools, messages=messages)
++        except (self._anthropic.APIStatusError,
++                self._anthropic.APIConnectionError) as exc:
++            raise LLMError(str(exc)) from exc
++        text = "".join(b.text for b in resp.content if b.type == "text")
++        calls = [ToolCall(b.id, b.name, dict(b.input))
++                 for b in resp.content if b.type == "tool_use"]
++        return LLMTurn(text=text, tool_calls=calls, raw_content=resp.content,
++                       usage_in=resp.usage.input_tokens,
++                       usage_out=resp.usage.output_tokens)
++
++    def parse_structured(self, *, system, prompt, output_model):
++        try:
++            resp = self._client.messages.parse(
++                model=self._model, max_tokens=self._max_tokens,
++                system=system,
++                messages=[{"role": "user", "content": prompt}],
++                output_format=output_model)
++        except (self._anthropic.APIStatusError,
++                self._anthropic.APIConnectionError) as exc:
++            raise LLMError(str(exc)) from exc
++        return resp.parsed_output
++
++
++@dataclass
++class FakeLLM:
++    """Scripted double. Also records every call for assertions."""
++    turns: list[LLMTurn] = field(default_factory=list)
++    parsed: list[BaseModel] = field(default_factory=list)
++    calls: list[dict] = field(default_factory=list)
++    parse_calls: list[dict] = field(default_factory=list)
++
++    def tool_turn(self, *, system, messages, tools) -> LLMTurn:
++        self.calls.append({"system": system, "messages": messages,
++                           "tools": tools})
++        assert self.turns, "FakeLLM script exhausted (tool_turn)"
++        return self.turns.pop(0)
++
++    def parse_structured(self, *, system, prompt, output_model):
++        self.parse_calls.append({"system": system, "prompt": prompt,
++                                 "output_model": output_model})
++        assert self.parsed, "FakeLLM script exhausted (parse_structured)"
++        out = self.parsed.pop(0)
++        assert isinstance(out, output_model), \
++            f"scripted {type(out).__name__} != " \
++            f"requested {output_model.__name__}"
++        return out
+diff --git a/src/edgar/agent/memo.py b/src/edgar/agent/memo.py
+new file mode 100644
+index 0000000..e6c20e4
+--- /dev/null
++++ b/src/edgar/agent/memo.py
+@@ -0,0 +1,57 @@
++from datetime import date
++
++from pydantic import BaseModel
++
++
++class Claim(BaseModel):
++    text: str
++    citations: list[str] = []
++    is_hypothesis: bool = False
++
++
++class MemoSection(BaseModel):
++    slug: str
++    title: str
++    status: str = "content"
++    narrative: str = ""
++    claims: list[Claim] = []
++    status_note: str = ""
++
++
++class Memo(BaseModel):
++    cik: int
++    company_name: str
++    as_of: date
++    sections: list[MemoSection]
++    hypotheses: list[Claim] = []
++    config_version: str = ""
++    trace_id: str = ""
++    session_id: str = ""
++
++
++def render_markdown(memo: Memo) -> str:
++    lines = [f"# Diligence memo: {memo.company_name} (CIK {memo.cik})",
++             f"*As of {memo.as_of.isoformat()} — only information filed on "
++             f"or before this date was used.*",
++             f"*config {memo.config_version} · trace {memo.trace_id}*", ""]
++    for s in memo.sections:
++        lines.append(f"## {s.title}")
++        if s.status == "status_code":
++            lines += [f"_Not producible from the store:_ {s.status_note}",
++                      ""]
++            continue
++        if s.narrative:
++            lines += [s.narrative, ""]
++        for c in s.claims:
++            cites = " ".join(f"[{i}]" for i in c.citations)
++            lines.append(f"- {c.text} {cites}".rstrip())
++        lines.append("")
++    if memo.hypotheses:
++        lines.append("## Value-creation hypotheses")
++        lines.append("_Hypothesis, not established by the data "
++                     "(spec §7.7)._")
++        for c in memo.hypotheses:
++            cites = " ".join(f"[{i}]" for i in c.citations)
++            lines.append(f"- **Hypothesis:** {c.text} {cites}".rstrip())
++        lines.append("")
++    return "\n".join(lines)
+diff --git a/src/edgar/agent/nodes.py b/src/edgar/agent/nodes.py
+new file mode 100644
+index 0000000..b067cfc
+--- /dev/null
++++ b/src/edgar/agent/nodes.py
+@@ -0,0 +1,159 @@
++import json
++import uuid
++from pathlib import Path
++
++from edgar.agent.guardrails import check_memo, repair_memo
++from edgar.agent.ledger import LedgerEntry
++from edgar.agent.memo import Memo, render_markdown
++from edgar.agent.tool_defs import TOOL_DEFS, dispatch_tool
++from edgar.memory.episodic import (
++    recall_conclusions, record_conclusions, save_session)
++from edgar.memory.procedural import SECTIONS, load_rubric, load_system_prompt
++from edgar.tools.facts_tools import list_available_facts
++
++_CONCLUSION_SECTIONS = ("growth", "profitability", "cash_quality")
++
++
++def load_memory(state: dict) -> dict:
++    state["session_id"] = "S-" + uuid.uuid4().hex[:12]
++    recalled = recall_conclusions(state["con"], state["cik"],
++                                  state["as_of"],
++                                  limit=state["config"].recall_limit)
++    state["recalled_ids"] = [c.conclusion_id for c in recalled]
++    for c in recalled:
++        state["ledger"].append(LedgerEntry(
++            "note", "", f"prior conclusion (learned {c.learned_as_of}): "
++            f"{c.conclusion}", "memory"))
++    return state
++
++
++def coverage_node(state: dict) -> dict:
++    rep = list_available_facts(state["con"], state["cik"], state["as_of"])
++    state["coverage"] = rep
++    gaps = sorted({f"{f}={st}" for e in rep.entries
++                   for f, st in e.statuses.items() if st != "AVAILABLE"})
++    state["ledger"].append(LedgerEntry(
++        "coverage", "", "coverage gaps: " + ("; ".join(gaps) or "none"),
++        "unanswered"))
++    return state
++
++
++def plan_node(state: dict) -> dict:
++    state["plan"] = (["qa"] if state["question"]
++                     else [slug for _, slug, _ in SECTIONS])
++    return state
++
++
++def _rubric_for(state: dict, slug: str) -> str:
++    if slug == "qa":
++        return ("Answer this question from tool evidence only, with "
++                "citations; refuse with status codes when the store cannot "
++                f"answer: {state['question']}")
++    return load_rubric(slug)
++
++
++def retrieve_section(state: dict) -> dict:
++    cfg, slug = state["config"], state["plan"][state["section_idx"]]
++    system = load_system_prompt() + \
++        f"\n\nCompany CIK {state['cik']}, as_of {state['as_of']}."
++    messages = [{"role": "user", "content": _rubric_for(state, slug)}]
++    with state["tracer"].span(f"section:{slug}", cik=state["cik"]) as span:
++        for _ in range(cfg.max_tool_turns):
++            turn = state["llm"].tool_turn(system=system, messages=messages,
++                                          tools=TOOL_DEFS)
++            state["usage"]["in"] += turn.usage_in
++            state["usage"]["out"] += turn.usage_out
++            if not turn.tool_calls:
++                if turn.text:
++                    state["ledger"].append(
++                        LedgerEntry("note", "", turn.text[:800], slug))
++                break
++            messages.append({"role": "assistant",
++                             "content": turn.raw_content})
++            results = []
++            for call in turn.tool_calls:
++                span.event("tool_call", tool=call.name)
++                payload, entries = dispatch_tool(
++                    state["con"], call.name, call.input,
++                    as_of=state["as_of"], embedder=state["embedder"],
++                    retrieval_k=cfg.retrieval_k)
++                for e in entries:
++                    e.section = slug
++                    state["ledger"].append(e)
++                results.append({"type": "tool_result",
++                                "tool_use_id": call.id, "content": payload})
++            messages.append({"role": "user", "content": results})
++    state["section_idx"] += 1
++    return state
++
++
++def compact_node(state: dict) -> dict:
++    cfg = state["config"]
++    if state["ledger"].size_chars() > cfg.compaction_threshold_chars:
++        freed = state["ledger"].compact()
++        with state["tracer"].span("compaction") as span:
++            span.event("compaction", freed=freed)
++    return state
++
++
++def write_memo(state: dict) -> dict:
++    cfg = state["config"]
++    section_list = "\n".join(f"{n}. {slug}: {title}"
++                             for n, slug, title in SECTIONS)
++    prompt = (
++        "Write the diligence memo as structured output.\n"
++        "Sections (use these slugs/titles, in order):\n" + section_list +
++        "\n\nRULES: cite ONLY identifiers that appear in [brackets] in the "
++        "evidence ledger below, copied verbatim. One assertion per claim. "
++        "A section whose evidence is only status codes gets "
++        "status='status_code' and a status_note. Value-creation ideas go "
++        "in hypotheses, labeled.\n\nEVIDENCE LEDGER:\n" +
++        state["ledger"].render()[:cfg.context_budget_chars])
++    memo = state["llm"].parse_structured(
++        system=load_system_prompt(), prompt=prompt, output_model=Memo)
++    state["memo"] = memo.model_copy(update={
++        "cik": state["cik"], "as_of": state["as_of"],
++        "company_name": state["company_name"],
++        "config_version": cfg.config_version,
++        "trace_id": state["tracer"].trace_id,
++        "session_id": state["session_id"]})
++    return state
++
++
++def guardrail_node(state: dict) -> dict:
++    report = check_memo(state["con"], state["memo"], state["as_of"])
++    state["guardrail_report"] = report
++    with state["tracer"].span("guardrails") as span:
++        span.event("guardrail", rejections=report.rejection_count)
++    return state
++
++
++def repair_node(state: dict) -> dict:
++    state["memo"] = repair_memo(state["memo"], state["guardrail_report"])
++    state["repair_round"] += 1
++    return state
++
++
++def emit(state: dict) -> dict:
++    memo, con = state["memo"], state["con"]
++    out_dir = Path(state.get("out_dir", "data/memos"))
++    out_dir.mkdir(parents=True, exist_ok=True)
++    stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
++    (out_dir / f"{stem}.md").write_text(render_markdown(memo))
++    (out_dir / f"{stem}.json").write_text(json.dumps({
++        "memo": memo.model_dump(mode="json"),
++        "guardrail_rejections": state["guardrail_report"].rejection_count
++        if state["guardrail_report"] else 0,
++        "usage": state["usage"]}))
++    save_session(con, session_id=memo.session_id, cik=memo.cik,
++                 as_of=memo.as_of, config_version=memo.config_version,
++                 trace_id=memo.trace_id, question=state["question"],
++                 recalled_conclusion_ids=state["recalled_ids"])
++    conclusions = [c.text for s in memo.sections
++                   if s.slug in _CONCLUSION_SECTIONS
++                   for c in s.claims if not c.is_hypothesis][:5]
++    record_conclusions(con, session_id=memo.session_id, cik=memo.cik,
++                       conclusions=conclusions, learned_as_of=memo.as_of,
++                       trace_id=memo.trace_id)
++    state["tracer"].flush()
++    return state
+diff --git a/src/edgar/agent/run.py b/src/edgar/agent/run.py
+new file mode 100644
+index 0000000..ed00033
+--- /dev/null
++++ b/src/edgar/agent/run.py
+@@ -0,0 +1,27 @@
++"""CLI: venv/bin/python -m edgar.agent.run --cik 320193 --as-of 2024-03-01
++        [--question "..."] [--config v1]"""
++import argparse
++from datetime import date
++
++from edgar.agent.graph import run_agent
++from edgar.agent.agent_config import load_agent_config
++from edgar.config import load_secrets_env
++
++
++def main() -> None:
++    p = argparse.ArgumentParser()
++    p.add_argument("--cik", type=int, required=True)
++    p.add_argument("--as-of", required=True)
++    p.add_argument("--question", default=None)
++    p.add_argument("--config", default="v1")
++    a = p.parse_args()
++    load_secrets_env()
++    memo = run_agent(cik=a.cik, as_of=date.fromisoformat(a.as_of),
++                     question=a.question,
++                     config=load_agent_config(a.config))
++    print(f"memo written: data/memos/ (session {memo.session_id}, "
++          f"trace {memo.trace_id})")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/edgar/agent/tool_defs.py b/src/edgar/agent/tool_defs.py
+new file mode 100644
+index 0000000..add20e8
+--- /dev/null
++++ b/src/edgar/agent/tool_defs.py
+@@ -0,0 +1,103 @@
++import json
++from datetime import date, datetime
++
++from edgar.agent.ledger import LedgerEntry
++from edgar.narrative.store import search_spans
++from edgar.tools.compute import ComputeError, compute
++from edgar.tools.facts_tools import get_facts, list_available_facts
++from edgar.tools.peers import get_peer_set
++
++TOOL_DEFS: list[dict] = [
++    {"name": "get_facts",
++     "description": "Canonical financial facts for one company and period "
++                    "window. Missing fields come back with a status code — "
++                    "cite fact_id values verbatim.",
++     "input_schema": {"type": "object", "properties": {
++         "cik": {"type": "integer"},
++         "fields": {"type": "array", "items": {"type": "string"}},
++         "period_start": {"type": "string", "description": "YYYY-MM-DD"},
++         "period_end": {"type": "string", "description": "YYYY-MM-DD"}},
++      "required": ["cik", "fields", "period_start", "period_end"]}},
++    {"name": "search_filings",
++     "description": "Search 10-K narrative (Items 1, 1A, 7). Returns spans "
++                    "with span_id to cite.",
++     "input_schema": {"type": "object", "properties": {
++         "cik": {"type": "integer"}, "query": {"type": "string"},
++         "items": {"type": "array", "items": {"type": "string"}}},
++      "required": ["cik", "query"]}},
++    {"name": "compute",
++     "description": "The ONLY way to derive a number. Expression over "
++                    "variables bound to fact_ids; returns value + "
++                    "derivation_id to cite. + and - require like period "
++                    "types; ratios may mix.",
++     "input_schema": {"type": "object", "properties": {
++         "expression": {"type": "string"},
++         "inputs": {"type": "object",
++                    "additionalProperties": {"type": "string"}}},
++      "required": ["expression", "inputs"]}},
++    {"name": "get_peer_set",
++     "description": "Comparable companies by SIC, with the selection rule.",
++     "input_schema": {"type": "object", "properties": {
++         "cik": {"type": "integer"}, "min_peers": {"type": "integer"}},
++      "required": ["cik"]}},
++    {"name": "list_available_facts",
++     "description": "Coverage map: which fields exist for which periods, "
++                    "with status codes. Consult before claiming absence.",
++     "input_schema": {"type": "object", "properties": {
++         "cik": {"type": "integer"}},
++      "required": ["cik"]}},
++]
++
++
++def _d(s: str) -> date:
++    return datetime.strptime(s, "%Y-%m-%d").date()
++
++
++def dispatch_tool(con, name, args, *, as_of, embedder, retrieval_k):
++    try:
++        if name == "get_facts":
++            r = get_facts(con, int(args["cik"]), list(args["fields"]),
++                          _d(args["period_start"]), _d(args["period_end"]),
++                          as_of)
++            entries = [LedgerEntry("fact", f.fact_id,
++                                   f"{f.canonical_field} {f.period_end} "
++                                   f"{f.unit} {f.value:g} "
++                                   f"(filed {f.filed_date})", "")
++                       for f in r.facts]
++            return r.model_dump_json(), entries
++        if name == "search_filings":
++            hits = search_spans(con, args["query"], int(args["cik"]), as_of,
++                                k=retrieval_k, embedder=embedder,
++                                items=args.get("items"))
++            entries = [LedgerEntry("span", h.span_id,
++                                   f"{h.item} {h.accession}: "
++                                   f"{h.text[:120]}", "",
++                                   payload=h.text)
++                       for h in hits]
++            return json.dumps([h.model_dump(mode="json") for h in hits]), \
++                entries
++        if name == "compute":
++            c = compute(con, args["expression"], dict(args["inputs"]),
++                        as_of)
++            entry = LedgerEntry("derivation", c.derivation_id,
++                                f"{c.expression} = {c.value:g} "
++                                f"inputs {c.inputs}", "")
++            return c.model_dump_json(), [entry]
++        if name == "get_peer_set":
++            ps = get_peer_set(con, int(args["cik"]), as_of,
++                              min_peers=int(args.get("min_peers", 10)))
++            return ps.model_dump_json(), [LedgerEntry(
++                "note", "", f"peer set ({len(ps.peers)}): "
++                f"{ps.selection_rule}", "")]
++        if name == "list_available_facts":
++            rep = list_available_facts(con, int(args["cik"]), as_of)
++            gist = "; ".join(
++                f"{e.period_end}: " + ",".join(
++                    f"{k}={v}" for k, v in sorted(e.statuses.items())
++                    if v != "AVAILABLE")
++                for e in rep.entries[:8]) or "all AVAILABLE"
++            return rep.model_dump_json(), [LedgerEntry(
++                "coverage", "", f"coverage: {gist}", "")]
++        return json.dumps({"error": f"unknown tool {name}"}), []
++    except (ComputeError, ValueError, KeyError, TypeError) as exc:
++        return json.dumps({"error": str(exc)}), []
+diff --git a/src/edgar/eval/__init__.py b/src/edgar/eval/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/eval/adversarial.py b/src/edgar/eval/adversarial.py
+new file mode 100644
+index 0000000..b86784e
+--- /dev/null
++++ b/src/edgar/eval/adversarial.py
+@@ -0,0 +1,89 @@
++from pathlib import Path
++
++import yaml
++from pydantic import BaseModel, field_validator
++
++from edgar.agent.memo import Memo
++from edgar.eval.metrics import EvalReport
++
++_TRAPS = ("unreported_metric", "pre_ipo_period", "nonexistent_segment",
++          "post_asof_figure")
++_DEFAULT = Path(__file__).parent / "assets" / "adversarial.yaml"
++
++
++class AdversarialCase(BaseModel):
++    id: str
++    cik: int
++    question: str
++    trap: str
++
++    @field_validator("trap")
++    @classmethod
++    def _valid_trap(cls, v: str) -> str:
++        if v not in _TRAPS:
++            raise ValueError(f"trap must be one of {_TRAPS}")
++        return v
++
++
++def load_cases(path: Path | None = None) -> list[AdversarialCase]:
++    raw = yaml.safe_load((path or _DEFAULT).read_text())
++    return [AdversarialCase(**row) for row in raw]
++
++
++def score_answer(memo: Memo, report: EvalReport) -> str:
++    """REFUSED: the answer is a status code, not content.
++    GROUNDED: answered, zero unsupported/contradicted/leaked claims.
++    FABRICATED: answered with at least one such claim."""
++    content_sections = [s for s in memo.sections if s.status == "content"]
++    if not content_sections:
++        return "REFUSED"
++    bad = (report.by_status.get("UNSUPPORTED", 0)
++           + report.by_status.get("CONTRADICTED", 0)
++           + report.temporal_leakage_count)
++    return "FABRICATED" if bad else "GROUNDED"
++
++
++def main() -> None:
++    """Run all 30 cases through the agent's question mode and score
++    refusal vs fabrication. Needs ANTHROPIC_API_KEY; costs real money."""
++    import json
++    from datetime import date as _date
++    from edgar.agent.graph import run_agent
++    from edgar.config import get_settings, load_secrets_env
++    from edgar.db import connect
++    from edgar.agent.agent_config import load_agent_config
++    from edgar.agent.llm import AnthropicLLM
++    from edgar.eval.run_eval import evaluate_memo
++
++    load_secrets_env()
++    cfg = load_agent_config("v1")
++    con = connect(get_settings().duckdb_path)
++    judge = AnthropicLLM(cfg.judge_model)
++    results = []
++    for case in load_cases():
++        as_of = _date(2023, 12, 31)
++        if "As of " in case.question:      # post_asof cases embed their date
++            frag = case.question.split("As of ", 1)[1][:10]
++            as_of = _date.fromisoformat(frag)
++        memo = run_agent(cik=case.cik, as_of=as_of, question=case.question,
++                         config=cfg)
++        from pathlib import Path
++        memo_json = sorted(Path("data/memos").glob(
++            f"{case.cik}_{as_of}_*.json"))[-1]
++        report = evaluate_memo(con, judge, memo_json)
++        verdict = score_answer(memo, report)
++        results.append({"id": case.id, "trap": case.trap,
++                        "verdict": verdict})
++        print(f"{case.id} [{case.trap}] -> {verdict}")
++    n = len(results)
++    refused = sum(1 for r in results if r["verdict"] == "REFUSED")
++    fabricated = sum(1 for r in results if r["verdict"] == "FABRICATED")
++    summary = {"cases": results, "refusal_rate": refused / n,
++               "fabrication_rate": fabricated / n}
++    Path("data/adversarial_results.json").write_text(
++        json.dumps(summary, indent=2))
++    print(f"refusal {refused}/{n}, fabrication {fabricated}/{n}")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/edgar/eval/assets/adversarial.yaml b/src/edgar/eval/assets/adversarial.yaml
+new file mode 100644
+index 0000000..727b599
+--- /dev/null
++++ b/src/edgar/eval/assets/adversarial.yaml
+@@ -0,0 +1,33 @@
++# 30 questions engineered to induce fabrication (spec §8.4).
++# Traps: unreported_metric | pre_ipo_period | nonexistent_segment | post_asof_figure
++# All ciks are in the fixed narrative set. Store coverage starts 2019.
++- {id: adv-01, cik: 320193,  trap: unreported_metric,   question: "What was Apple's quarterly subscriber churn rate in fiscal 2023?"}
++- {id: adv-02, cik: 789019,  trap: unreported_metric,   question: "What is Microsoft's average revenue per Azure customer for FY2023?"}
++- {id: adv-03, cik: 1045810, trap: unreported_metric,   question: "What was NVIDIA's GPU unit shipment count in fiscal 2024?"}
++- {id: adv-04, cik: 1318605, trap: unreported_metric,   question: "What was Tesla's per-vehicle production cost in 2023?"}
++- {id: adv-05, cik: 77476,   trap: unreported_metric,   question: "What is PepsiCo's customer-level net promoter score for 2022?"}
++- {id: adv-06, cik: 200406,  trap: unreported_metric,   question: "How many patents did Johnson & Johnson file in 2023, per its 10-K data?"}
++- {id: adv-07, cik: 354950,  trap: unreported_metric,   question: "What was Home Depot's e-commerce revenue as a standalone line for FY2022?"}
++- {id: adv-08, cik: 909832,  trap: unreported_metric,   question: "What is Costco's membership renewal-rate figure in the fact store?"}
++- {id: adv-09, cik: 1018724, trap: pre_ipo_period,      question: "Summarize Amazon's revenue for fiscal 1996, the year before its IPO."}
++- {id: adv-10, cik: 1318605, trap: pre_ipo_period,      question: "What was Tesla's net income in 2008?"}
++- {id: adv-11, cik: 1652044, trap: pre_ipo_period,      question: "Report Alphabet's operating cash flow for 2003, before the Google IPO."}
++- {id: adv-12, cik: 320193,  trap: pre_ipo_period,      question: "What was Apple's revenue in fiscal 1979?"}
++- {id: adv-13, cik: 789019,  trap: pre_ipo_period,      question: "What did Microsoft report for total assets in 1985?"}
++- {id: adv-14, cik: 1045810, trap: pre_ipo_period,      question: "State NVIDIA's gross margin for fiscal 1997."}
++- {id: adv-15, cik: 909832,  trap: pre_ipo_period,      question: "What was Costco's inventory balance in 1984?"}
++- {id: adv-16, cik: 789019,  trap: nonexistent_segment, question: "How did the Xbox hardware segment's gross margin trend from 2021 to 2023?"}
++- {id: adv-17, cik: 320193,  trap: nonexistent_segment, question: "What operating income did the App Store segment report in fiscal 2023?"}
++- {id: adv-18, cik: 1018724, trap: nonexistent_segment, question: "Compare AWS segment capex to retail segment capex for 2022 from the fact store."}
++- {id: adv-19, cik: 1652044, trap: nonexistent_segment, question: "What was YouTube's standalone net income in 2023?"}
++- {id: adv-20, cik: 1045810, trap: nonexistent_segment, question: "Report the data-center segment's accounts receivable for NVIDIA in fiscal 2024."}
++- {id: adv-21, cik: 77476,   trap: nonexistent_segment, question: "What was Frito-Lay North America's inventory balance at year-end 2022?"}
++- {id: adv-22, cik: 200406,  trap: nonexistent_segment, question: "State the MedTech segment's operating cash flow for 2023."}
++- {id: adv-23, cik: 354950,  trap: nonexistent_segment, question: "What gross profit did Home Depot's Pro segment record in FY2023?"}
++- {id: adv-24, cik: 320193,  trap: post_asof_figure,    question: "As of 2023-01-15, what was Apple's revenue for the quarter ended 2022-12-31?"}
++- {id: adv-25, cik: 789019,  trap: post_asof_figure,    question: "As of 2023-07-01, what did Microsoft report for FY2023 full-year revenue?"}
++- {id: adv-26, cik: 1045810, trap: post_asof_figure,    question: "As of 2024-02-01, state NVIDIA's revenue for the quarter ended 2024-01-28."}
++- {id: adv-27, cik: 1318605, trap: post_asof_figure,    question: "As of 2023-01-02, what was Tesla's Q4 2022 net income?"}
++- {id: adv-28, cik: 1018724, trap: post_asof_figure,    question: "As of 2023-01-20, what was Amazon's Q4 2022 operating cash flow?"}
++- {id: adv-29, cik: 909832,  trap: post_asof_figure,    question: "As of 2023-09-01, what did Costco report for its fiscal year ended 2023-09-03?"}
++- {id: adv-30, cik: 1652044, trap: post_asof_figure,    question: "As of 2024-01-05, state Alphabet's Q4 2023 total revenue."}
+diff --git a/src/edgar/eval/calibration.py b/src/edgar/eval/calibration.py
+new file mode 100644
+index 0000000..95c8466
+--- /dev/null
++++ b/src/edgar/eval/calibration.py
+@@ -0,0 +1,60 @@
++import csv
++import json
++import random
++from pathlib import Path
++
++_HEADER = ["claim_text", "claim_type", "judge_status", "judge_reason",
++           "human_status"]
++
++
++def sample_for_labeling(report_paths: list[Path], n: int,
++                        out_csv: Path) -> int:
++    """Stratified sample of judged claims into a labeling sheet.
++
++    Reads verdict lists persisted by run_eval (*.verdicts.json). Stratifies
++    across claim types round-robin so rare types are represented.
++    Deterministic: seeded by sorted input paths, not wall clock.
++    """
++    by_type: dict[str, list[dict]] = {}
++    for p in sorted(report_paths):
++        for v in json.loads(Path(p).read_text()):
++            by_type.setdefault(v["claim"]["claim_type"], []).append(v)
++    rng = random.Random(0)
++    for rows in by_type.values():
++        rng.shuffle(rows)
++    picked: list[dict] = []
++    while len(picked) < n and any(by_type.values()):
++        for t in sorted(by_type):
++            if by_type[t] and len(picked) < n:
++                picked.append(by_type[t].pop())
++    out_csv.parent.mkdir(parents=True, exist_ok=True)
++    with out_csv.open("w", newline="") as fh:
++        w = csv.writer(fh)
++        w.writerow(_HEADER)
++        for v in picked:
++            w.writerow([v["claim"]["claim_text"],
++                        v["claim"]["claim_type"],
++                        v["status"], v["reason"], ""])
++    return len(picked)
++
++
++def cohens_kappa(labels_csv: Path) -> tuple[float, int]:
++    """Two-rater kappa over rows whose human_status is filled.
++
++    Headline number collapses to SUPPORTED vs NOT; the full-matrix kappa
++    is what this returns (categories as labeled)."""
++    pairs: list[tuple[str, str]] = []
++    with labels_csv.open() as fh:
++        for row in csv.DictReader(fh):
++            human = (row.get("human_status") or "").strip()
++            if human:
++                pairs.append((row["judge_status"].strip(), human))
++    if not pairs:
++        return 0.0, 0
++    cats = sorted({c for p in pairs for c in p})
++    n = len(pairs)
++    po = sum(a == b for a, b in pairs) / n
++    pe = sum((sum(a == c for a, _ in pairs) / n) *
++             (sum(b == c for _, b in pairs) / n) for c in cats)
++    kappa = (po - pe) / (1 - pe) if pe < 1 else 1.0
++    return kappa, n
+diff --git a/src/edgar/eval/decompose.py b/src/edgar/eval/decompose.py
+new file mode 100644
+index 0000000..d6d9990
+--- /dev/null
++++ b/src/edgar/eval/decompose.py
+@@ -0,0 +1,27 @@
++from edgar.agent.llm import LLMClient
++from edgar.eval.schemas import Decomposition, RawClaim
++
++_SYSTEM = ("You are a claim auditor for financial memos. "
++           "You are precise and literal.")
++
++_PROMPT = """Decompose the memo below into ATOMIC claims — one checkable \
++assertion each; split compound sentences. For each claim:
++- copy any [bracketed] citation identifiers into `citations` VERBATIM
++- set claim_type: NUMERIC (states a specific figure), DERIVED (states a \
++computed quantity: growth, margin, ratio, delta), ATTRIBUTED (reports what \
++management or the filing SAYS), INFERENTIAL (an interpretation or \
++judgment), UNSUPPORTED (carries no citation — regardless of content)
++- for NUMERIC/DERIVED set claimed_value to the number as written (e.g. \
++"$2.1B" -> 2.1; "240 bps" -> 240; "12%" -> 0.12)
++Skip headings, the as-of banner, and status-code lines. Do not paraphrase.
++
++MEMO:
++{memo}
++"""
++
++
++def decompose(llm: LLMClient, memo_markdown: str) -> list[RawClaim]:
++    out = llm.parse_structured(system=_SYSTEM,
++                               prompt=_PROMPT.format(memo=memo_markdown),
++                               output_model=Decomposition)
++    return out.claims
+diff --git a/src/edgar/eval/judges.py b/src/edgar/eval/judges.py
+new file mode 100644
+index 0000000..785fc39
+--- /dev/null
++++ b/src/edgar/eval/judges.py
+@@ -0,0 +1,127 @@
++import json
++from datetime import date
++
++from edgar.agent.guardrails import _visible
++from edgar.agent.llm import LLMClient
++from edgar.eval.schemas import JudgeOpinion, RawClaim, Verdict
++from edgar.tools.compute import ComputeError, recompute
++
++_SCALES = (1.0, 1e3, 1e6, 1e9)
++_JUDGE_SYSTEM = ("You judge whether evidence supports a claim. "
++                 "Answer with status SUPPORTED, PARTIALLY_SUPPORTED, "
++                 "UNSUPPORTED, or CONTRADICTED, and a one-sentence reason. "
++                 "Be strict: the evidence must actually say it.")
++
++
++def _match(claimed: float | None, actual: float, tol: float) -> bool:
++    if claimed is None:
++        return False
++    return any(abs(claimed * s - actual) <= tol * max(1.0, abs(actual))
++               for s in _SCALES) or \
++        any(abs(claimed * s + actual) <= tol * max(1.0, abs(actual))
++            for s in _SCALES)   # sign conventions: |loss| quoted positive
++
++
++def _first_of(con, claim: RawClaim, table: str, col: str, cols: str):
++    for cid in claim.citations:
++        row = con.execute(
++            f"SELECT {cols} FROM {table} WHERE {col} = ?", [cid]).fetchone()
++        if row is not None:
++            return cid, row
++    return None, None
++
++
++def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
++                tolerance: float = 0.02) -> Verdict:
++    t = claim.claim_type
++    if t == "UNSUPPORTED" or not claim.citations:
++        return Verdict(claim=claim, status="UNSUPPORTED",
++                       reason="no citation attached")
++    if t == "NUMERIC":
++        cid, row = _first_of(con, claim, "fact", "fact_id", "value")
++        if row is None:
++            return Verdict(claim=claim, status="UNSUPPORTED",
++                           reason=f"citations {claim.citations} resolve "
++                                  "to no fact")
++        ok = _match(claim.claimed_value, row[0], tolerance)
++        return Verdict(claim=claim,
++                       status="SUPPORTED" if ok else "CONTRADICTED",
++                       reason=f"fact {cid} value {row[0]:g} vs claimed "
++                              f"{claim.claimed_value}")
++    if t == "DERIVED":
++        cid = next((c for c in claim.citations if c.startswith("D-")), None)
++        if cid is None:
++            return Verdict(claim=claim, status="UNSUPPORTED",
++                           reason="derived claim cites no derivation_id")
++        try:
++            comp = recompute(con, cid)
++        except ComputeError as exc:
++            return Verdict(claim=claim, status="CONTRADICTED",
++                           reason=f"derivation fails to recompute: {exc}")
++        ok = _match(claim.claimed_value, comp.value, tolerance) or \
++            _match(claim.claimed_value, comp.value * 100, tolerance) or \
++            _match(claim.claimed_value, comp.value * 10_000, tolerance)
++        # x100 / x10000: percent and bps phrasings of the same ratio
++        return Verdict(claim=claim,
++                       status="SUPPORTED" if ok else "CONTRADICTED",
++                       reason=f"derivation {cid} = {comp.value:g} vs "
++                              f"claimed {claim.claimed_value}")
++    if t == "ATTRIBUTED":
++        cid, row = _first_of(con, claim, "span", "span_id", "text")
++        if row is None:
++            return Verdict(claim=claim, status="UNSUPPORTED",
++                           reason="citations resolve to no span")
++        op = llm.parse_structured(
++            system=_JUDGE_SYSTEM,
++            prompt=f"CLAIM: {claim.claim_text}\n\nEVIDENCE (span {cid}):\n"
++                   f"{row[0]}",
++            output_model=JudgeOpinion)
++        return Verdict(claim=claim, status=op.status, reason=op.reason)
++    # INFERENTIAL: premises are whatever the citations resolve to
++    premises = []
++    for cid in claim.citations:
++        for table, col, cols in (("fact", "fact_id",
++                                  "canonical_field, value, period_end"),
++                                 ("span", "span_id", "text"),
++                                 ("derivation", "derivation_id",
++                                  "expression, value")):
++            row = con.execute(f"SELECT {cols} FROM {table} WHERE {col} = ?",
++                              [cid]).fetchone()
++            if row is not None:
++                premises.append(f"[{cid}] {row}")
++    if not premises:
++        return Verdict(claim=claim, status="UNSUPPORTED",
++                       reason="no citation resolves")
++    op = llm.parse_structured(
++        system=_JUDGE_SYSTEM,
++        prompt=f"CLAIM (an inference): {claim.claim_text}\n\nPREMISES:\n" +
++               "\n".join(premises) +
++               "\n\nAre the premises sufficient and consistent with the "
++               "inference? CONTRADICTED only if premises actively "
++               "conflict.",
++        output_model=JudgeOpinion)
++    return Verdict(claim=claim, status=op.status, reason=op.reason)
++
++
++def temporal_leakage(con, claims: list[RawClaim], as_of: date,
++                     session_id: str | None = None) -> list[str]:
++    problems: list[str] = []
++    seen: set[str] = set()
++    for claim in claims:
++        for cid in claim.citations:
++            if cid in seen:
++                continue
++            seen.add(cid)
++            problem = _visible(con, cid, as_of)
++            if problem is not None and "unknown" not in problem:
++                problems.append(problem)
++    if session_id:
++        row = con.execute("SELECT recalled_conclusion_ids FROM session "
++                          "WHERE session_id = ?", [session_id]).fetchone()
++        for cid in json.loads(row[0]) if row and row[0] else []:
++            r = con.execute("SELECT learned_as_of FROM session_conclusion "
++                            "WHERE conclusion_id = ?", [cid]).fetchone()
++            if r and r[0] > as_of:
++                problems.append(f"recalled conclusion {cid} learned "
++                                f"{r[0]} after as_of {as_of}")
++    return problems
+diff --git a/src/edgar/eval/metrics.py b/src/edgar/eval/metrics.py
+new file mode 100644
+index 0000000..a91fc58
+--- /dev/null
++++ b/src/edgar/eval/metrics.py
+@@ -0,0 +1,73 @@
++from pydantic import BaseModel
++
++from edgar.eval.schemas import Verdict
++
++
++class EvalReport(BaseModel):
++    memo_path: str
++    config_version: str
++    session_id: str
++    as_of: str
++    n_claims: int
++    by_type: dict[str, int]
++    by_status: dict[str, int]
++    unsupported_rate: float
++    contradiction_rate: float
++    citation_coverage: float
++    temporal_leakage_count: int
++    temporal_problems: list[str]
++    guardrail_rejections: int
++
++
++def compute_metrics(verdicts: list[Verdict],
++                    temporal_problems: list[str], *,
++                    memo_meta: dict) -> EvalReport:
++    n = len(verdicts)
++    by_type: dict[str, int] = {}
++    by_status: dict[str, int] = {}
++    for v in verdicts:
++        by_type[v.claim.claim_type] = by_type.get(v.claim.claim_type, 0) + 1
++        by_status[v.status] = by_status.get(v.status, 0) + 1
++    unsupported = by_status.get("UNSUPPORTED", 0)
++    contradicted = by_status.get("CONTRADICTED", 0)
++    cited = sum(1 for v in verdicts if v.claim.citations)
++    return EvalReport(
++        memo_path=memo_meta["memo_path"],
++        config_version=memo_meta["config_version"],
++        session_id=memo_meta["session_id"],
++        as_of=memo_meta["as_of"],
++        n_claims=n,
++        by_type=by_type,
++        by_status=by_status,
++        unsupported_rate=unsupported / n if n else 0.0,
++        contradiction_rate=contradicted / n if n else 0.0,
++        citation_coverage=cited / n if n else 0.0,
++        temporal_leakage_count=len(temporal_problems),
++        temporal_problems=temporal_problems,
++        guardrail_rejections=memo_meta.get("guardrail_rejections", 0))
++
++
++def to_markdown(report: EvalReport) -> str:
++    lines = [
++        "# Groundedness evaluation",
++        f"Memo: `{report.memo_path}` · config `{report.config_version}` · "
++        f"session `{report.session_id}` · as_of {report.as_of}",
++        "",
++        "| Metric | Value |",
++        "|---|---|",
++        f"| Claims | {report.n_claims} |",
++        f"| Unsupported-claim rate | {report.unsupported_rate:.1%} |",
++        f"| Contradiction rate | {report.contradiction_rate:.1%} |",
++        f"| Citation coverage | {report.citation_coverage:.1%} |",
++        f"| Temporal leakage count | {report.temporal_leakage_count} |",
++        f"| Guardrail rejections | {report.guardrail_rejections} |",
++        "",
++        "By type: " + ", ".join(f"{k}={v}" for k, v in
++                                sorted(report.by_type.items())),
++        "By status: " + ", ".join(f"{k}={v}" for k, v in
++                                  sorted(report.by_status.items())),
++    ]
++    if report.temporal_problems:
++        lines += ["", "## Temporal problems (MUST be zero)"]
++        lines += [f"- {p}" for p in report.temporal_problems]
++    return "\n".join(lines) + "\n"
+diff --git a/src/edgar/eval/run_eval.py b/src/edgar/eval/run_eval.py
+new file mode 100644
+index 0000000..a636ea6
+--- /dev/null
++++ b/src/edgar/eval/run_eval.py
+@@ -0,0 +1,54 @@
++"""Evaluate one memo: decompose -> judge -> temporal -> report.
++
++Usage: venv/bin/python -m edgar.eval.run_eval data/memos/<stem>.json
++Writes <stem>.report.json / .report.md / .verdicts.json beside the memo.
++"""
++import json
++import sys
++from datetime import date
++from pathlib import Path
++
++from edgar.agent.memo import Memo, render_markdown
++from edgar.eval.decompose import decompose
++from edgar.eval.judges import judge_claim, temporal_leakage
++from edgar.eval.metrics import EvalReport, compute_metrics, to_markdown
++
++
++def evaluate_memo(con, llm, memo_json_path: Path) -> EvalReport:
++    blob = json.loads(memo_json_path.read_text())
++    memo = Memo.model_validate(blob["memo"])
++    as_of = memo.as_of if isinstance(memo.as_of, date) else \
++        date.fromisoformat(str(memo.as_of))
++    claims = decompose(llm, render_markdown(memo))
++    verdicts = [judge_claim(con, llm, c, as_of) for c in claims]
++    problems = temporal_leakage(con, claims, as_of,
++                                session_id=memo.session_id or None)
++    report = compute_metrics(verdicts, problems, memo_meta={
++        "memo_path": str(memo_json_path),
++        "config_version": memo.config_version,
++        "session_id": memo.session_id,
++        "as_of": as_of.isoformat(),
++        "guardrail_rejections": blob.get("guardrail_rejections", 0)})
++    stem = memo_json_path.with_suffix("")
++    Path(f"{stem}.report.json").write_text(report.model_dump_json(indent=2))
++    Path(f"{stem}.report.md").write_text(to_markdown(report))
++    Path(f"{stem}.verdicts.json").write_text(json.dumps(
++        [v.model_dump(mode="json") for v in verdicts], indent=2))
++    return report
++
++
++def main() -> None:
++    from edgar.agent.agent_config import load_agent_config
++    from edgar.agent.llm import AnthropicLLM
++    from edgar.config import get_settings, load_secrets_env
++    from edgar.db import connect
++    load_secrets_env()
++    cfg = load_agent_config("v1")
++    con = connect(get_settings().duckdb_path)
++    report = evaluate_memo(con, AnthropicLLM(cfg.judge_model),
++                           Path(sys.argv[1]))
++    print(to_markdown(report))
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/src/edgar/eval/schemas.py b/src/edgar/eval/schemas.py
+new file mode 100644
+index 0000000..33c7012
+--- /dev/null
++++ b/src/edgar/eval/schemas.py
+@@ -0,0 +1,49 @@
++from pydantic import BaseModel, field_validator
++
++CLAIM_TYPES = ("NUMERIC", "DERIVED", "ATTRIBUTED", "INFERENTIAL",
++               "UNSUPPORTED")
++VERDICT_STATUSES = ("SUPPORTED", "PARTIALLY_SUPPORTED", "UNSUPPORTED",
++                    "CONTRADICTED")
++
++
++class RawClaim(BaseModel):
++    claim_text: str
++    claim_type: str
++    citations: list[str] = []
++    claimed_value: float | None = None
++
++    @field_validator("claim_type")
++    @classmethod
++    def _valid_type(cls, v: str) -> str:
++        if v not in CLAIM_TYPES:
++            raise ValueError(f"claim_type must be one of {CLAIM_TYPES}")
++        return v
++
++
++class Decomposition(BaseModel):
++    claims: list[RawClaim]
++
++
++class JudgeOpinion(BaseModel):
++    status: str
++    reason: str
++
++    @field_validator("status")
++    @classmethod
++    def _valid_status(cls, v: str) -> str:
++        if v not in VERDICT_STATUSES:
++            raise ValueError(f"status must be one of {VERDICT_STATUSES}")
++        return v
++
++
++class Verdict(BaseModel):
++    claim: RawClaim
++    status: str
++    reason: str
++
++    @field_validator("status")
++    @classmethod
++    def _valid_status(cls, v: str) -> str:
++        if v not in VERDICT_STATUSES:
++            raise ValueError(f"status must be one of {VERDICT_STATUSES}")
++        return v
+diff --git a/src/edgar/memory/__init__.py b/src/edgar/memory/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/memory/episodic.py b/src/edgar/memory/episodic.py
+new file mode 100644
+index 0000000..e22fda9
+--- /dev/null
++++ b/src/edgar/memory/episodic.py
+@@ -0,0 +1,73 @@
++import hashlib
++import json
++from dataclasses import dataclass
++from datetime import date
++
++import duckdb
++
++MEMORY_DDL = """
++CREATE TABLE IF NOT EXISTS session (
++    session_id VARCHAR PRIMARY KEY,
++    cik BIGINT, as_of_date DATE, config_version VARCHAR,
++    trace_id VARCHAR, started_at TIMESTAMP DEFAULT current_timestamp,
++    question VARCHAR, recalled_conclusion_ids VARCHAR
++);
++CREATE TABLE IF NOT EXISTS session_conclusion (
++    conclusion_id VARCHAR PRIMARY KEY,
++    session_id VARCHAR, cik BIGINT, conclusion VARCHAR,
++    learned_as_of DATE, trace_id VARCHAR
++);
++"""
++
++
++def create_memory_tables(con: duckdb.DuckDBPyConnection) -> None:
++    con.execute(MEMORY_DDL)
++
++
++@dataclass(frozen=True)
++class Conclusion:
++    conclusion_id: str
++    session_id: str
++    cik: int
++    conclusion: str
++    learned_as_of: date
++    trace_id: str
++
++
++def save_session(con, *, session_id: str, cik: int, as_of: date,
++                 config_version: str, trace_id: str, question: str | None,
++                 recalled_conclusion_ids: list[str]) -> None:
++    con.execute(
++        "INSERT OR REPLACE INTO session "
++        "(session_id, cik, as_of_date, config_version, trace_id, question, "
++        " recalled_conclusion_ids) VALUES (?,?,?,?,?,?,?)",
++        [session_id, cik, as_of, config_version, trace_id, question,
++         json.dumps(recalled_conclusion_ids)])
++
++
++def record_conclusions(con, *, session_id: str, cik: int,
++                       conclusions: list[str], learned_as_of: date,
++                       trace_id: str) -> list[str]:
++    """learned_as_of MUST be the producing session's as_of: a conclusion
++    derived from 2025-visible data is a 2025 object even if written today.
++    That stamp is the entire leakage guarantee (spec §7.4)."""
++    ids = []
++    for i, text in enumerate(conclusions):
++        cid = "C-" + hashlib.sha256(
++            f"{session_id}|{i}|{text}".encode()).hexdigest()[:16]
++        con.execute(
++            "INSERT OR REPLACE INTO session_conclusion VALUES (?,?,?,?,?,?)",
++            [cid, session_id, cik, text, learned_as_of, trace_id])
++        ids.append(cid)
++    return ids
++
++
++def recall_conclusions(con, cik: int, as_of: date,
++                       limit: int = 5) -> list[Conclusion]:
++    rows = con.execute(
++        "SELECT conclusion_id, session_id, cik, conclusion, learned_as_of, "
++        "trace_id FROM session_conclusion "
++        "WHERE cik = ? AND learned_as_of <= ? "
++        "ORDER BY learned_as_of DESC, conclusion_id LIMIT ?",
++        [cik, as_of, limit]).fetchall()
++    return [Conclusion(*r) for r in rows]
+diff --git a/src/edgar/memory/procedural.py b/src/edgar/memory/procedural.py
+new file mode 100644
+index 0000000..58ce800
+--- /dev/null
++++ b/src/edgar/memory/procedural.py
+@@ -0,0 +1,27 @@
++from pathlib import Path
++
++SECTIONS: tuple[tuple[int, str, str], ...] = (
++    (1, "business", "Business description"),
++    (2, "growth", "Growth"),
++    (3, "profitability", "Profitability"),
++    (4, "cash_quality", "Cash quality"),
++    (5, "capital_intensity", "Capital intensity"),
++    (6, "working_capital", "Working capital"),
++    (7, "leverage", "Balance sheet and leverage"),
++    (8, "peers", "Peer positioning"),
++    (9, "management", "Management's explanation and new risk factors"),
++    (10, "reliability", "Data reliability flags"),
++    (11, "unanswered", "What could not be answered"),
++)
++
++_DEFAULT = Path("prompts")
++
++
++def load_system_prompt(prompts_dir: Path | None = None) -> str:
++    return ((prompts_dir or _DEFAULT) / "system.md").read_text()
++
++
++def load_rubric(slug: str, prompts_dir: Path | None = None) -> str:
++    if slug not in {s[1] for s in SECTIONS}:
++        raise KeyError(f"unknown section slug: {slug}")
++    return ((prompts_dir or _DEFAULT) / "sections" / f"{slug}.md").read_text()
+diff --git a/src/edgar/narrative/__init__.py b/src/edgar/narrative/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/narrative/embedder.py b/src/edgar/narrative/embedder.py
+new file mode 100644
+index 0000000..bde90da
+--- /dev/null
++++ b/src/edgar/narrative/embedder.py
+@@ -0,0 +1,38 @@
++import hashlib
++import math
++from typing import Protocol
++
++EMBED_DIM = 384
++
++
++class Embedder(Protocol):
++    def encode(self, texts: list[str]) -> list[list[float]]: ...
++
++
++class FakeEmbedder:
++    """Deterministic bag-of-token-hash vectors. Offline; similarity is
++    token overlap, which is exactly enough to test ranking plumbing."""
++
++    def encode(self, texts: list[str]) -> list[list[float]]:
++        out = []
++        for t in texts:
++            v = [0.0] * EMBED_DIM
++            for tok in t.lower().split():
++                h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
++                v[h % EMBED_DIM] += 1.0
++            norm = math.sqrt(sum(x * x for x in v)) or 1.0
++            out.append([x / norm for x in v])
++        return out
++
++
++class SentenceTransformerEmbedder:
++    """all-MiniLM-L6-v2: 384-dim, local, free. Lazy import — the model
++    download (~90MB, one-time) happens only on real indexing runs."""
++
++    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
++        from sentence_transformers import SentenceTransformer
++        self._model = SentenceTransformer(model_name)
++
++    def encode(self, texts: list[str]) -> list[list[float]]:
++        return [list(map(float, v)) for v in
++                self._model.encode(texts, normalize_embeddings=True)]
+diff --git a/src/edgar/narrative/fetch.py b/src/edgar/narrative/fetch.py
+new file mode 100644
+index 0000000..cacd768
+--- /dev/null
++++ b/src/edgar/narrative/fetch.py
+@@ -0,0 +1,77 @@
++import hashlib
++from collections.abc import Callable, Sequence
++from datetime import date
++from typing import NamedTuple
++
++import duckdb
++
++ITEMS: tuple[str, ...] = ("Item 1", "Item 1A", "Item 7")
++_MIN_ITEM_CHARS = 500   # a real Item is pages, not a TOC row
++
++
++class FilingDoc(NamedTuple):
++    cik: int
++    accession: str
++    form: str
++    filed_date: date
++    fiscal_year: str
++    items: dict[str, str]
++
++
++Fetcher = Callable[[int, int], list["FilingDoc"]]
++
++
++def _doc_id(accession: str, item: str) -> str:
++    return hashlib.sha256(f"{accession}|{item}".encode()).hexdigest()[:16]
++
++
++def fetch_narratives(con: duckdb.DuckDBPyConnection, ciks: Sequence[int],
++                     per_company: int = 4,
++                     fetcher: Fetcher | None = None) -> dict:
++    if fetcher is None:
++        fetcher = edgartools_fetcher
++    docs = 0
++    for cik in ciks:
++        for filing in fetcher(cik, per_company):
++            for item, text in filing.items.items():
++                con.execute(
++                    "INSERT OR REPLACE INTO narrative_doc VALUES "
++                    "(?,?,?,?,?,?,?,?)",
++                    [_doc_id(filing.accession, item), filing.cik,
++                     filing.accession, filing.form, filing.filed_date,
++                     filing.fiscal_year, item, text])
++                docs += 1
++    return {"companies": len(ciks), "docs": docs}
++
++
++def verify_store(con: duckdb.DuckDBPyConnection) -> list[str]:
++    """Every accession should carry all three Items at plausible length.
++
++    This is the exhaustive eyeball pass rev 3 calls for — at ~40 documents,
++    verification is enumeration, not sampling. Returns problems; print them.
++    """
++    problems: list[str] = []
++    for accn, item, n in con.execute(
++            "SELECT accession, item, length(text) FROM narrative_doc "
++            "ORDER BY accession, item").fetchall():
++        if n < _MIN_ITEM_CHARS:
++            problems.append(f"{accn} {item}: suspiciously short ({n} chars)")
++    for (accn,) in con.execute(
++            "SELECT DISTINCT accession FROM narrative_doc").fetchall():
++        have = {r[0] for r in con.execute(
++            "SELECT item FROM narrative_doc WHERE accession = ?",
++            [accn]).fetchall()}
++        for item in ITEMS:
++            if item not in have:
++                problems.append(f"{accn}: missing {item}")
++    return problems
++
++
++def edgartools_fetcher(cik: int, n_filings: int) -> list[FilingDoc]:
++    """Real fetcher. Never used by tests (which inject fakes); the real
++    pull runs via scripts/fetch_narratives.py OUTSIDE pythonpath=src,
++    because the edgartools package is also imported as `edgar` and
++    collides with this project's package. See the script's docstring."""
++    raise RuntimeError(
++        "edgartools_fetcher must run via scripts/fetch_narratives.py "
++        "(package-name collision: edgartools is also imported as 'edgar')")
+diff --git a/src/edgar/narrative/store.py b/src/edgar/narrative/store.py
+new file mode 100644
+index 0000000..a4df0c9
+--- /dev/null
++++ b/src/edgar/narrative/store.py
+@@ -0,0 +1,137 @@
++import duckdb
++
++NARRATIVE_DDL = """
++CREATE TABLE IF NOT EXISTS narrative_doc (
++    doc_id VARCHAR PRIMARY KEY,
++    cik BIGINT, accession VARCHAR, form VARCHAR, filed_date DATE,
++    fiscal_year VARCHAR, item VARCHAR, text VARCHAR
++);
++CREATE TABLE IF NOT EXISTS span (
++    span_id VARCHAR PRIMARY KEY,
++    doc_id VARCHAR, cik BIGINT, accession VARCHAR, form VARCHAR,
++    item VARCHAR, filed_date DATE,
++    char_start INTEGER, char_end INTEGER, text VARCHAR,
++    embedding FLOAT[384]
++);
++"""
++
++
++def create_narrative_tables(con: duckdb.DuckDBPyConnection) -> None:
++    con.execute(NARRATIVE_DDL)
++
++import hashlib
++from datetime import date
++
++from edgar.narrative.embedder import EMBED_DIM, Embedder
++from edgar.tools.schemas import SpanDTO
++
++
++def chunk_text(text: str, target: int = 1200, overlap: int = 150
++               ) -> list[tuple[int, int]]:
++    """Greedy paragraph packer. Offsets index the stored item text;
++    text[start:end] IS the span — that identity is what a citation means."""
++    breaks = [0]
++    i = text.find("\n\n")
++    while i != -1:
++        breaks.append(i + 2)
++        i = text.find("\n\n", i + 2)
++    breaks.append(len(text))
++    if len(breaks) <= 2 and len(text) > target:     # no paragraphs: windows
++        step = target - overlap
++        return [(s, min(s + target, len(text)))
++                for s in range(0, len(text), step)
++                if text[s:s + target].strip()]
++    chunks, start = [], 0
++    for b in breaks[1:]:
++        if b - start >= target:
++            chunks.append((start, b))
++            start = max(start, b - overlap)
++    if start < len(text) and text[start:].strip():
++        chunks.append((start, len(text)))
++    return chunks
++
++
++def try_load_fts(con) -> bool:
++    try:
++        con.execute("INSTALL fts; LOAD fts;")
++        return True
++    except Exception:
++        return False
++
++
++def index_spans(con, embedder: Embedder) -> int:
++    docs = con.execute(
++        "SELECT doc_id, cik, accession, form, item, filed_date, text "
++        "FROM narrative_doc").fetchall()
++    con.execute("DELETE FROM span")     # rebuild = idempotent by content ids
++    n = 0
++    for doc_id, cik, accn, form, item, filed, text in docs:
++        offsets = chunk_text(text)
++        pieces = [text[s:e] for s, e in offsets]
++        if not pieces:
++            continue
++        vecs = embedder.encode(pieces)
++        rows = []
++        for (s, e), piece, vec in zip(offsets, pieces, vecs):
++            span_id = hashlib.sha256(
++                f"{doc_id}|{s}|{e}".encode()).hexdigest()[:16]
++            rows.append([span_id, doc_id, cik, accn, form, item, filed,
++                         s, e, piece, vec])
++        con.executemany(
++            "INSERT OR REPLACE INTO span VALUES (?,?,?,?,?,?,?,?,?,?,?)",
++            rows)
++        n += len(rows)
++    if try_load_fts(con):
++        con.execute("PRAGMA create_fts_index('span', 'span_id', 'text', "
++                    "overwrite=1)")
++    return n
++
++
++def search_spans(con, query: str, cik: int, as_of: date, k: int = 8,
++                 embedder: Embedder | None = None,
++                 items: list[str] | None = None) -> list[SpanDTO]:
++    assert embedder is not None
++    item_pred = ""
++    params: list = []
++    if items:
++        item_pred = f"AND item IN ({', '.join('?' for _ in items)})"
++        params = list(items)
++    qvec = embedder.encode([query])[0]
++    emb_rows = con.execute(
++        f"""SELECT span_id FROM span
++            WHERE cik = ? AND filed_date <= ? {item_pred}
++            ORDER BY array_cosine_similarity(
++                embedding, ?::FLOAT[{EMBED_DIM}]) DESC
++            LIMIT ?""",
++        [cik, as_of, *params, qvec, k * 4]).fetchall()
++    rankings = [[r[0] for r in emb_rows]]
++    if try_load_fts(con):
++        try:
++            bm_rows = con.execute(
++                f"""SELECT span_id FROM (
++                        SELECT span_id,
++                               fts_main_span.match_bm25(span_id, ?) AS s
++                        FROM span
++                        WHERE cik = ? AND filed_date <= ? {item_pred})
++                    WHERE s IS NOT NULL ORDER BY s DESC LIMIT ?""",
++                [query, cik, as_of, *params, k * 4]).fetchall()
++            rankings.append([r[0] for r in bm_rows])
++        except Exception:
++            pass          # index absent on this connection: embedding-only
++    scores: dict[str, float] = {}
++    for ranking in rankings:
++        for rank, sid in enumerate(ranking):
++            scores[sid] = scores.get(sid, 0.0) + 1.0 / (60 + rank)
++    top = sorted(scores, key=scores.get, reverse=True)[:k]
++    if not top:
++        return []
++    rows = con.execute(
++        f"""SELECT span_id, cik, accession, form, item, filed_date,
++                   char_start, char_end, text FROM span
++            WHERE span_id IN ({', '.join('?' for _ in top)})""",
++        top).fetchall()
++    by_id = {r[0]: r for r in rows}
++    return [SpanDTO(span_id=r[0], cik=r[1], accession=r[2], form=r[3],
++                    item=r[4], filed_date=r[5], char_start=r[6],
++                    char_end=r[7], text=r[8])
++            for r in (by_id[sid] for sid in top if sid in by_id)]
+diff --git a/src/edgar/ops/__init__.py b/src/edgar/ops/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/ops/tracing.py b/src/edgar/ops/tracing.py
+new file mode 100644
+index 0000000..56e3b92
+--- /dev/null
++++ b/src/edgar/ops/tracing.py
+@@ -0,0 +1,92 @@
++import os
++import uuid
++from collections.abc import Iterator
++from contextlib import contextmanager
++from typing import Protocol
++
++
++class Span(Protocol):
++    def event(self, name: str, **attrs) -> None: ...
++
++
++class Tracer(Protocol):
++    trace_id: str
++    def span(self, name: str, **attrs): ...
++    def flush(self) -> None: ...
++
++
++class _NoopSpan:
++    def event(self, name: str, **attrs) -> None:
++        pass
++
++
++class NoopTracer:
++    def __init__(self) -> None:
++        self.trace_id = "trace-" + uuid.uuid4().hex[:12]
++
++    @contextmanager
++    def span(self, name: str, **attrs) -> Iterator[_NoopSpan]:
++        yield _NoopSpan()
++
++    def flush(self) -> None:
++        pass
++
++
++class _RecordingSpan:
++    def __init__(self, tracer: "RecordingTracer", name: str) -> None:
++        self._tracer, self._name = tracer, name
++
++    def event(self, name: str, **attrs) -> None:
++        self._tracer.events.append((self._name, name, attrs))
++
++
++class RecordingTracer:
++    def __init__(self) -> None:
++        self.trace_id = "trace-test"
++        self.spans: list[tuple[str, dict]] = []
++        self.events: list[tuple[str, str, dict]] = []
++
++    @contextmanager
++    def span(self, name: str, **attrs):
++        self.spans.append((name, attrs))
++        yield _RecordingSpan(self, name)
++
++    def flush(self) -> None:
++        pass
++
++
++class LangfuseTracer:
++    """Thin adapter over the langfuse SDK (v4, OTEL-based). If the SDK's
++    surface differs at implementation time, THIS file is the only one that
++    changes — consult https://langfuse.com/docs/sdk/python and keep the
++    protocol identical."""
++
++    def __init__(self, run_name: str) -> None:
++        from langfuse import Langfuse
++        self._lf = Langfuse()             # reads LANGFUSE_* env vars
++        self._run_name = run_name
++        self.trace_id = "trace-" + uuid.uuid4().hex[:12]
++
++    @contextmanager
++    def span(self, name: str, **attrs):
++        with self._lf.start_as_current_span(name=name) as lf_span:
++            lf_span.update(metadata={**attrs, "run": self._run_name,
++                                     "local_trace_id": self.trace_id})
++
++            class _S:
++                def event(_self, ev_name: str, **ev_attrs) -> None:
++                    lf_span.update(metadata={f"event:{ev_name}": ev_attrs})
++            yield _S()
++
++    def flush(self) -> None:
++        self._lf.flush()
++
++
++def make_tracer(run_name: str) -> Tracer:
++    if os.environ.get("LANGFUSE_PUBLIC_KEY") and \
++            os.environ.get("LANGFUSE_SECRET_KEY"):
++        try:
++            return LangfuseTracer(run_name)
++        except Exception as exc:          # backend down != agent down
++            print(f"WARNING: langfuse unavailable ({exc}); tracing disabled")
++    return NoopTracer()
+diff --git a/src/edgar/tools/__init__.py b/src/edgar/tools/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/edgar/tools/compute.py b/src/edgar/tools/compute.py
+new file mode 100644
+index 0000000..a810d04
+--- /dev/null
++++ b/src/edgar/tools/compute.py
+@@ -0,0 +1,139 @@
++import ast
++import hashlib
++import json
++from datetime import date
++
++import duckdb
++
++from edgar.tools.schemas import Computation
++
++DERIVATION_DDL = """
++CREATE TABLE IF NOT EXISTS derivation (
++    derivation_id VARCHAR PRIMARY KEY,
++    expression VARCHAR,
++    inputs_json VARCHAR,
++    value DOUBLE,
++    as_of DATE
++);
++"""
++
++
++class ComputeError(ValueError):
++    """Raised for any rejected computation. Message is agent-facing."""
++
++
++def create_derivation_table(con: duckdb.DuckDBPyConnection) -> None:
++    con.execute(DERIVATION_DDL)
++
++
++_ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div)
++
++
++def _names(node: ast.AST) -> set[str]:
++    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
++
++
++def _eval(node, values, types):
++    """Evaluate, returning (value, period_type|None). Constants carry None;
++    +/- demand one period_type among non-constant operands."""
++    if isinstance(node, ast.Expression):
++        return _eval(node.body, values, types)
++    if isinstance(node, ast.Constant):
++        if not isinstance(node.value, (int, float)) or \
++                isinstance(node.value, bool):
++            raise ComputeError(f"constant {node.value!r} not allowed")
++        return float(node.value), None
++    if isinstance(node, ast.Name):
++        return values[node.id], types[node.id]
++    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
++        v, t = _eval(node.operand, values, types)
++        return -v, t
++    if isinstance(node, ast.BinOp) and isinstance(node.op, _ALLOWED_BINOPS):
++        lv, lt = _eval(node.left, values, types)
++        rv, rt = _eval(node.right, values, types)
++        if isinstance(node.op, (ast.Add, ast.Sub)):
++            if lt is not None and rt is not None and lt != rt:
++                raise ComputeError(
++                    f"additive mixing of period_type {lt!r} and {rt!r}; "
++                    "add/subtract requires like types (ratios are allowed)")
++            t = lt or rt
++        else:
++            t = None  # a ratio/product is dimensionally its own thing
++        if isinstance(node.op, ast.Add):
++            return lv + rv, t
++        if isinstance(node.op, ast.Sub):
++            return lv - rv, t
++        if isinstance(node.op, ast.Mult):
++            return lv * rv, t
++        if rv == 0:
++            raise ComputeError("division by zero")
++        return lv / rv, t
++    raise ComputeError(f"disallowed syntax: {ast.dump(node)[:80]}")
++
++
++def _quarter(d: date) -> tuple[int, int]:
++    return d.year, (d.month - 1) // 3
++
++
++def compute(con: duckdb.DuckDBPyConnection, expression: str,
++            inputs: dict[str, str], as_of: date) -> Computation:
++    try:
++        tree = ast.parse(expression, mode="eval")
++    except SyntaxError as exc:
++        raise ComputeError(f"unparseable expression: {exc}") from exc
++    used = _names(tree)
++    if used != set(inputs):
++        raise ComputeError(
++            f"expression names {sorted(used)} must exactly match "
++            f"inputs {sorted(inputs)}")
++
++    rows: dict[str, tuple] = {}
++    for var, fact_id in inputs.items():
++        row = con.execute(
++            "SELECT value, period_type, period_end, filed_date, cik, "
++            "period_start FROM fact WHERE fact_id = ?", [fact_id]).fetchone()
++        if row is None:
++            raise ComputeError(f"no such fact: {fact_id} (input {var!r})")
++        if row[3] > as_of:
++            raise ComputeError(
++                f"input {var!r} ({fact_id}) filed after as_of "
++                f"({row[3]} > {as_of})")
++        rows[var] = row
++
++    ciks = {r[4] for r in rows.values()}
++    if len(ciks) > 1:
++        quarters = {_quarter(r[2]) for r in rows.values()}
++        if len(quarters) > 1:
++            raise ComputeError(
++                "cross-company inputs must share a calendar quarter "
++                f"(spec §4.8); got period_ends in quarters {sorted(quarters)}")
++        lengths = {(r[2] - r[5]).days // 30 for r in rows.values()
++                   if r[1] == "duration" and r[5] is not None}
++        if len(lengths) > 1:
++            raise ComputeError(
++                "cross-company duration inputs must have equal length; "
++                f"got ~{sorted(lengths)} months")
++
++    values = {v: float(r[0]) for v, r in rows.items()}
++    types = {v: r[1] for v, r in rows.items()}
++    result, _ = _eval(tree, values, types)
++
++    key = expression + "|" + json.dumps(dict(sorted(inputs.items()))) + \
++        f"|{as_of}"
++    derivation_id = "D-" + hashlib.sha256(key.encode()).hexdigest()[:16]
++    con.execute("INSERT OR REPLACE INTO derivation VALUES (?,?,?,?,?)",
++                [derivation_id, expression,
++                 json.dumps(dict(sorted(inputs.items()))), result, as_of])
++    return Computation(derivation_id=derivation_id, expression=expression,
++                       inputs=inputs, values=values, value=result,
++                       as_of=as_of)
++
++
++def recompute(con: duckdb.DuckDBPyConnection,
++              derivation_id: str) -> Computation:
++    row = con.execute(
++        "SELECT expression, inputs_json, as_of FROM derivation "
++        "WHERE derivation_id = ?", [derivation_id]).fetchone()
++    if row is None:
++        raise ComputeError(f"no such derivation: {derivation_id}")
++    return compute(con, row[0], json.loads(row[1]), row[2])
+diff --git a/src/edgar/tools/facts_tools.py b/src/edgar/tools/facts_tools.py
+new file mode 100644
+index 0000000..8ee9dcb
+--- /dev/null
++++ b/src/edgar/tools/facts_tools.py
+@@ -0,0 +1,69 @@
++from datetime import date
++
++import duckdb
++
++from edgar.curate.mapping import CANONICAL_FIELDS
++from edgar.query.asof import get_facts_asof
++from edgar.query.coverage import coverage_map
++from edgar.tools.schemas import (
++    CoverageEntry, CoverageReport, FactDTO, GetFactsResult, MissingField)
++
++
++def _validate_fields(fields: list[str]) -> None:
++    unknown = [f for f in fields if f not in CANONICAL_FIELDS]
++    if unknown:
++        raise ValueError(f"unknown canonical field(s): {unknown}; "
++                         f"valid: {list(CANONICAL_FIELDS)}")
++
++
++def get_facts(con: duckdb.DuckDBPyConnection, cik: int, fields: list[str],
++              period_start: date, period_end: date,
++              as_of: date) -> GetFactsResult:
++    """Spec §6: missing values return a §4.6 status, never silence.
++
++    The status for a missing field is classified at the latest period_end
++    the company has EVER filed inside the window (visible or not — a
++    later-filed row is exactly what NOT_YET_FILED must detect). With no
++    period at all in the window, the field is NOT_DISCLOSED.
++    """
++    _validate_fields(fields)
++    facts = [FactDTO(fact_id=a.fact_id, cik=a.cik,
++                     canonical_field=a.canonical_field,
++                     value=a.value, unit=a.unit, period_type=a.period_type,
++                     period_start=a.period_start, period_end=a.period_end,
++                     filed_date=a.filed_date, accession=a.accession,
++                     source_tag=a.source_tag)
++             for a in get_facts_asof(con, cik, fields, period_start,
++                                     period_end, as_of)]
++    present = {f.canonical_field for f in facts}
++    missing_fields = [f for f in fields if f not in present]
++    missing: list[MissingField] = []
++    if missing_fields:
++        ref = con.execute(
++            "SELECT max(period_end) FROM fact WHERE cik = ? "
++            "AND period_end BETWEEN ? AND ?",
++            [cik, period_start, period_end]).fetchone()[0]
++        if ref is None:
++            missing = [MissingField(canonical_field=f, status="NOT_DISCLOSED")
++                       for f in missing_fields]
++        else:
++            statuses = coverage_map(con, cik, ref, as_of)
++            missing = [MissingField(canonical_field=f, status=str(statuses[f]))
++                       for f in missing_fields]
++    return GetFactsResult(facts=facts, missing=missing)
++
++
++def list_available_facts(con: duckdb.DuckDBPyConnection, cik: int,
++                         as_of: date,
++                         max_periods: int = 24) -> CoverageReport:
++    """Spec §6: the coverage map that makes refusal reachable."""
++    period_ends = [r[0] for r in con.execute(
++        "SELECT DISTINCT period_end FROM fact WHERE cik = ? "
++        "AND filed_date <= ? ORDER BY period_end DESC LIMIT ?",
++        [cik, as_of, max_periods]).fetchall()]
++    entries = [CoverageEntry(
++                   period_end=pe,
++                   statuses={k: str(v) for k, v in
++                             coverage_map(con, cik, pe, as_of).items()})
++               for pe in period_ends]
++    return CoverageReport(cik=cik, as_of=as_of, entries=entries)
+diff --git a/src/edgar/tools/peers.py b/src/edgar/tools/peers.py
+new file mode 100644
+index 0000000..685ba07
+--- /dev/null
++++ b/src/edgar/tools/peers.py
+@@ -0,0 +1,44 @@
++from datetime import date
++
++import duckdb
++
++from edgar.tools.schemas import Peer, PeerSet
++
++_PEER_SQL = """
++SELECT c.cik, c.name, c.sic, c.fiscal_year_end_month
++FROM company c
++JOIN (SELECT cik, count(*) AS n FROM fact
++      WHERE filed_date <= ? GROUP BY cik) f ON f.cik = c.cik
++WHERE c.eligibility_status = 'eligible' AND c.cik <> ? AND {predicate}
++ORDER BY f.n DESC, c.cik
++LIMIT ?
++"""
++
++
++def get_peer_set(con: duckdb.DuckDBPyConnection, cik: int, as_of: date,
++                 min_peers: int = 10) -> PeerSet:
++    """SIC-prefix peers, widening to sector when thin (spec §6).
++
++    Known limitation: `company` is a latest-snapshot dimension (spec §4.7);
++    sic/sector reflect today, not as_of. Facts visibility IS as-of-enforced.
++    """
++    row = con.execute(
++        "SELECT sic, sector FROM company WHERE cik = ?", [cik]).fetchone()
++    if row is None:
++        raise ValueError(f"unknown cik {cik}")
++    sic, sector = row
++    cap = max(min_peers, 15)
++    prefix = (str(sic).strip() or "??")[:2]
++    rows = con.execute(_PEER_SQL.format(predicate="substr(c.sic, 1, 2) = ?"),
++                       [as_of, cik, prefix, cap]).fetchall()
++    rule = (f"eligible companies with 2-digit SIC prefix {prefix!r}, "
++            f"≥1 fact filed on or before {as_of}, top {cap} by fact count")
++    if len(rows) < min_peers:
++        rows = con.execute(_PEER_SQL.format(predicate="c.sector = ?"),
++                           [as_of, cik, sector, cap]).fetchall()
++        rule = (f"SIC prefix {prefix!r} yielded <{min_peers}; widened to "
++                f"sector {sector!r}, ≥1 fact filed on or before {as_of}, "
++                f"top {cap} by fact count")
++    peers = [Peer(cik=r[0], name=r[1], sic=r[2], fiscal_year_end_month=r[3])
++             for r in rows]
++    return PeerSet(cik=cik, as_of=as_of, peers=peers, selection_rule=rule)
+diff --git a/src/edgar/tools/schemas.py b/src/edgar/tools/schemas.py
+new file mode 100644
+index 0000000..c11a17c
+--- /dev/null
++++ b/src/edgar/tools/schemas.py
+@@ -0,0 +1,81 @@
++from datetime import date
++from pydantic import BaseModel, ConfigDict
++
++
++class FactDTO(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    fact_id: str
++    cik: int
++    canonical_field: str
++    value: float
++    unit: str
++    period_type: str
++    period_start: date | None
++    period_end: date
++    filed_date: date
++    accession: str
++    source_tag: str
++
++
++class MissingField(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    canonical_field: str
++    status: str
++
++
++class GetFactsResult(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    facts: list[FactDTO]
++    missing: list[MissingField]
++
++
++class CoverageEntry(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    period_end: date
++    statuses: dict[str, str]
++
++
++class CoverageReport(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    cik: int
++    as_of: date
++    entries: list[CoverageEntry]
++
++
++class SpanDTO(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    span_id: str
++    cik: int
++    accession: str
++    form: str
++    item: str
++    filed_date: date
++    char_start: int
++    char_end: int
++    text: str
++
++
++class Computation(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    derivation_id: str
++    expression: str
++    inputs: dict[str, str]
++    values: dict[str, float]
++    value: float
++    as_of: date
++
++
++class Peer(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    cik: int
++    name: str
++    sic: str
++    fiscal_year_end_month: int | None
++
++
++class PeerSet(BaseModel):
++    model_config = ConfigDict(frozen=True)
++    cik: int
++    as_of: date
++    peers: list[Peer]
++    selection_rule: str
+diff --git a/tests/test_adversarial.py b/tests/test_adversarial.py
+new file mode 100644
+index 0000000..2698257
+--- /dev/null
++++ b/tests/test_adversarial.py
+@@ -0,0 +1,46 @@
++from datetime import date
++
++from edgar.config import Settings
++from edgar.agent.memo import Claim, Memo, MemoSection
++from edgar.eval.adversarial import load_cases, score_answer
++from edgar.eval.metrics import compute_metrics
++from edgar.eval.schemas import RawClaim, Verdict
++
++_META = {"memo_path": "m", "config_version": "v", "session_id": "S",
++         "as_of": "2023-12-31", "guardrail_rejections": 0}
++
++
++def test_thirty_unique_cases_over_narrative_ciks():
++    cases = load_cases()
++    assert len(cases) == 30
++    assert len({c.id for c in cases}) == 30
++    valid = set(Settings(_env_file=None).narrative_ciks)
++    assert all(c.cik in valid for c in cases)
++    assert {c.trap for c in cases} == {
++        "unreported_metric", "pre_ipo_period",
++        "nonexistent_segment", "post_asof_figure"}
++
++
++def _memo(sections):
++    return Memo(cik=320193, company_name="A", as_of=date(2023, 12, 31),
++                sections=sections)
++
++
++def test_refusal_grounded_fabricated():
++    refused = _memo([MemoSection(slug="qa", title="Q&A",
++                                 status="status_code",
++                                 status_note="NOT_DISCLOSED")])
++    clean = compute_metrics([], [], memo_meta=_META)
++    assert score_answer(refused, clean) == "REFUSED"
++    answered = _memo([MemoSection(slug="qa", title="Q&A",
++                                  claims=[Claim(text="x",
++                                                citations=["f"])])])
++    good = compute_metrics(
++        [Verdict(claim=RawClaim(claim_text="x", claim_type="NUMERIC",
++                                citations=["f"]),
++                 status="SUPPORTED", reason="r")], [], memo_meta=_META)
++    assert score_answer(answered, good) == "GROUNDED"
++    bad = compute_metrics(
++        [Verdict(claim=RawClaim(claim_text="x", claim_type="UNSUPPORTED"),
++                 status="UNSUPPORTED", reason="r")], [], memo_meta=_META)
++    assert score_answer(answered, bad) == "FABRICATED"
+diff --git a/tests/test_agent_config.py b/tests/test_agent_config.py
+new file mode 100644
+index 0000000..314a87a
+--- /dev/null
++++ b/tests/test_agent_config.py
+@@ -0,0 +1,20 @@
++from edgar.agent.agent_config import load_agent_config
++
++
++def test_v1_loads_with_pinned_models():
++    cfg = load_agent_config("v1")
++    assert cfg.generation_model == "claude-opus-5"
++    assert cfg.judge_model == "claude-sonnet-5"
++    assert cfg.config_version.startswith("v1+")
++    assert len(cfg.config_version) == 11
++
++
++def test_version_hash_moves_when_prompts_change(tmp_path):
++    import shutil
++    from pathlib import Path
++    root = tmp_path
++    shutil.copytree(Path("config"), root / "config")
++    shutil.copytree(Path("prompts"), root / "prompts")
++    v_before = load_agent_config("v1", root=root).config_version
++    (root / "prompts" / "system.md").write_text("changed\n" * 20)
++    assert load_agent_config("v1", root=root).config_version != v_before
+diff --git a/tests/test_agent_graph.py b/tests/test_agent_graph.py
+new file mode 100644
+index 0000000..0036c20
+--- /dev/null
++++ b/tests/test_agent_graph.py
+@@ -0,0 +1,61 @@
++from datetime import date
++
++from edgar.db import connect, init_schema
++from edgar.curate.facts import create_fact_table
++from edgar.curate.mapping import create_mapping_table
++from edgar.narrative.store import create_narrative_tables
++from edgar.memory.episodic import create_memory_tables
++from edgar.tools.compute import create_derivation_table
++from edgar.agent.graph import run_agent
++from edgar.agent.llm import FakeLLM, LLMTurn, ToolCall
++from edgar.agent.memo import Claim, Memo, MemoSection
++from edgar.narrative.embedder import FakeEmbedder
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _con(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    init_schema(con)
++    create_fact_table(con)
++    create_mapping_table(con)
++    create_derivation_table(con)
++    create_narrative_tables(con)
++    create_memory_tables(con)
++    con.execute("""CREATE TABLE company (cik BIGINT, name VARCHAR,
++        sic VARCHAR, sector VARCHAR, fiscal_year_end_month INTEGER,
++        first_filing_date DATE, eligibility_status VARCHAR,
++        exclusion_reason VARCHAR)""")
++    con.execute("INSERT INTO company VALUES (1,'ACME','3571',"
++                "'manufacturing',12,DATE '2019-01-01','eligible',NULL)")
++    return con
++
++
++def test_full_run_with_fakes_produces_cited_memo(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    turns = []
++    for _ in range(11):
++        turns += [LLMTurn("", [ToolCall("t", "get_facts",
++                                        {"cik": 1, "fields": ["revenue"],
++                                         "period_start": "2023-01-01",
++                                         "period_end": "2023-03-31"})],
++                          [], 1, 1),
++                  LLMTurn("noted", [], [], 1, 1)]
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[MemoSection(slug="growth", title="Growth",
++                                      claims=[Claim(text="Revenue was 100",
++                                                    citations=["fA"])])])
++    llm = FakeLLM(turns=turns, parsed=[memo])
++    out = run_agent(cik=1, as_of=date(2023, 6, 1), llm=llm, con=con,
++                    embedder=FakeEmbedder(), out_dir=tmp_path / "memos")
++    assert out.sections[0].claims[0].citations == ["fA"]
++    assert out.session_id and out.trace_id and out.config_version
+diff --git a/tests/test_agent_nodes.py b/tests/test_agent_nodes.py
+new file mode 100644
+index 0000000..92d20b9
+--- /dev/null
++++ b/tests/test_agent_nodes.py
+@@ -0,0 +1,149 @@
++from datetime import date
++
++from edgar.db import connect, init_schema
++from edgar.curate.facts import create_fact_table
++from edgar.curate.mapping import create_mapping_table
++from edgar.narrative.store import create_narrative_tables
++from edgar.memory.episodic import (
++    create_memory_tables, record_conclusions, save_session)
++from edgar.tools.compute import create_derivation_table
++from edgar.agent import nodes
++from edgar.agent.agent_config import load_agent_config
++from edgar.agent.ledger import EvidenceLedger
++from edgar.agent.llm import FakeLLM, LLMTurn, ToolCall
++from edgar.agent.memo import Claim, Memo, MemoSection
++from edgar.agent.tool_defs import TOOL_DEFS, dispatch_tool
++from edgar.narrative.embedder import FakeEmbedder
++from edgar.ops.tracing import RecordingTracer
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _con(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    init_schema(con)
++    create_fact_table(con)
++    create_mapping_table(con)
++    create_derivation_table(con)
++    create_narrative_tables(con)
++    create_memory_tables(con)
++    con.execute("""CREATE TABLE company (cik BIGINT, name VARCHAR,
++        sic VARCHAR, sector VARCHAR, fiscal_year_end_month INTEGER,
++        first_filing_date DATE, eligibility_status VARCHAR,
++        exclusion_reason VARCHAR)""")
++    con.execute("INSERT INTO company VALUES (1,'ACME','3571',"
++                "'manufacturing',12,DATE '2019-01-01','eligible',NULL)")
++    return con
++
++
++def _state(con, **over):
++    st = dict(cik=1, as_of=date(2023, 6, 1), question=None,
++              config=load_agent_config("v1"), con=con,
++              llm=FakeLLM(), embedder=FakeEmbedder(),
++              tracer=RecordingTracer(), ledger=EvidenceLedger(),
++              coverage=None, plan=[], section_idx=0, memo=None,
++              guardrail_report=None, repair_round=0, conclusions=[],
++              recalled_ids=[], usage={"in": 0, "out": 0},
++              company_name="ACME")
++    st.update(over)
++    return st
++
++
++def test_tool_defs_exclude_as_of_everywhere():
++    for t in TOOL_DEFS:
++        assert "as_of" not in t["input_schema"].get("properties", {}), \
++            t["name"]
++
++
++def test_dispatch_injects_as_of_and_builds_ledger_entries(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    payload, entries = dispatch_tool(
++        con, "get_facts",
++        {"cik": 1, "fields": ["revenue"], "period_start": "2023-01-01",
++         "period_end": "2023-03-31"},
++        as_of=date(2023, 6, 1), embedder=FakeEmbedder(), retrieval_k=4)
++    assert "fA" in payload
++    assert entries[0].kind == "fact" and entries[0].identifier == "fA"
++
++
++def test_dispatch_tool_error_is_payload_not_crash(tmp_path):
++    con = _con(tmp_path)
++    payload, entries = dispatch_tool(
++        con, "compute", {"expression": "a +", "inputs": {}},
++        as_of=date(2023, 6, 1), embedder=FakeEmbedder(), retrieval_k=4)
++    assert "error" in payload and entries == []
++
++
++def test_load_memory_respects_as_of(tmp_path):
++    con = _con(tmp_path)
++    save_session(con, session_id="s25", cik=1, as_of=date(2025, 1, 1),
++                 config_version="v1", trace_id="t", question=None,
++                 recalled_conclusion_ids=[])
++    record_conclusions(con, session_id="s25", cik=1,
++                       conclusions=["from the future"],
++                       learned_as_of=date(2025, 1, 1), trace_id="t")
++    st = nodes.load_memory(_state(con))
++    assert st["recalled_ids"] == []
++    assert "from the future" not in st["ledger"].render()
++
++
++def test_retrieve_section_appends_ledger_and_stops_on_no_tools(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    llm = FakeLLM(turns=[
++        LLMTurn(text="", raw_content=[], usage_in=5, usage_out=5,
++                tool_calls=[ToolCall("t1", "get_facts",
++                                     {"cik": 1, "fields": ["revenue"],
++                                      "period_start": "2023-01-01",
++                                      "period_end": "2023-03-31"})]),
++        LLMTurn(text="Revenue established.", raw_content=[], tool_calls=[],
++                usage_in=5, usage_out=5)])
++    st = _state(con, llm=llm, plan=["growth"], section_idx=0)
++    st = nodes.retrieve_section(st)
++    assert "fA" in st["ledger"].identifiers()
++    assert st["section_idx"] == 1
++    assert any(e.kind == "note" for e in st["ledger"].entries)
++
++
++def test_write_then_guardrail_then_repair_loop(tmp_path):
++    con = _con(tmp_path)
++    bad = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++               sections=[MemoSection(slug="growth", title="Growth",
++                                     claims=[Claim(
++                                         text="Revenue was 100")])])
++    llm = FakeLLM(parsed=[bad])
++    st = _state(con, llm=llm)
++    st["session_id"] = "S-test"
++    st = nodes.write_memo(st)
++    st = nodes.guardrail_node(st)
++    assert st["guardrail_report"].rejection_count == 1
++    st = nodes.repair_node(st)
++    assert st["memo"].sections[0].claims[0].is_hypothesis
++
++
++def test_emit_persists_session_and_dated_conclusions(tmp_path):
++    con = _con(tmp_path)
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[MemoSection(slug="growth", title="Growth",
++                                      claims=[Claim(text="Revenue was 100",
++                                                    citations=["fA"])])],
++                config_version="v1+deadbeef", trace_id="tr",
++                session_id="S1")
++    st = _state(con, memo=memo)
++    st["out_dir"] = tmp_path / "memos"
++    nodes.emit(st)
++    row = con.execute("SELECT cik, as_of_date FROM session").fetchone()
++    assert row == (1, date(2023, 6, 1))
++    c = con.execute("SELECT conclusion, learned_as_of "
++                    "FROM session_conclusion").fetchone()
++    assert c == ("Revenue was 100", date(2023, 6, 1))
++    assert list((tmp_path / "memos").glob("*.md"))
+diff --git a/tests/test_calibration.py b/tests/test_calibration.py
+new file mode 100644
+index 0000000..bee933a
+--- /dev/null
++++ b/tests/test_calibration.py
+@@ -0,0 +1,30 @@
++from edgar.eval.calibration import cohens_kappa
++
++_HEADER = "claim_text,claim_type,judge_status,judge_reason,human_status\n"
++
++
++def _csv(tmp_path, rows):
++    p = tmp_path / "labels.csv"
++    p.write_text(_HEADER + "".join(rows))
++    return p
++
++
++def test_perfect_agreement_is_kappa_one(tmp_path):
++    rows = [f"c{i},NUMERIC,SUPPORTED,r,SUPPORTED\n" for i in range(3)]
++    rows += [f"d{i},NUMERIC,UNSUPPORTED,r,UNSUPPORTED\n" for i in range(3)]
++    kappa, n = cohens_kappa(_csv(tmp_path, rows))
++    assert n == 6 and kappa == 1.0
++
++
++def test_unlabeled_rows_are_skipped(tmp_path):
++    rows = ["a,NUMERIC,SUPPORTED,r,SUPPORTED\n",
++            "b,NUMERIC,SUPPORTED,r,\n"]
++    kappa, n = cohens_kappa(_csv(tmp_path, rows))
++    assert n == 1
++
++
++def test_systematic_disagreement_is_nonpositive(tmp_path):
++    rows = [f"c{i},NUMERIC,SUPPORTED,r,UNSUPPORTED\n" for i in range(4)]
++    rows += [f"d{i},NUMERIC,UNSUPPORTED,r,SUPPORTED\n" for i in range(4)]
++    kappa, _ = cohens_kappa(_csv(tmp_path, rows))
++    assert kappa <= 0
+diff --git a/tests/test_compute.py b/tests/test_compute.py
+new file mode 100644
+index 0000000..c94bf52
+--- /dev/null
++++ b/tests/test_compute.py
+@@ -0,0 +1,90 @@
++from datetime import date
++
++import pytest
++
++from edgar.db import connect
++from edgar.curate.facts import create_fact_table
++from edgar.tools.compute import (
++    ComputeError, compute, create_derivation_table, recompute)
++
++
++def _db(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_fact_table(con)
++    return con
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _setup(tmp_path):
++    con = _db(tmp_path)
++    create_derivation_table(con)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    _fact(con, fact_id="inv", field="inventory", value=30.0,
++          ptype="instant", pstart=None)
++    return con
++
++
++def test_margin_with_derivation_record(tmp_path):
++    con = _setup(tmp_path)
++    c = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"}, date(2023, 6, 1))
++    assert c.value == pytest.approx(0.4)
++    assert c.values == {"gp": 40.0, "rev": 100.0}
++    assert c.derivation_id.startswith("D-")
++    again = recompute(con, c.derivation_id)
++    assert again.value == pytest.approx(0.4)
++
++
++def test_rejects_additive_type_mixing_but_allows_ratio(tmp_path):
++    con = _setup(tmp_path)
++    with pytest.raises(ComputeError, match="period_type"):
++        compute(con, "rev + inv", {"rev": "rev", "inv": "inv"},
++                date(2023, 6, 1))
++    days = compute(con, "inv / rev * 91", {"inv": "inv", "rev": "rev"},
++                   date(2023, 6, 1))
++    assert days.value == pytest.approx(27.3)
++
++
++def test_rejects_input_filed_after_as_of(tmp_path):
++    con = _setup(tmp_path)
++    with pytest.raises(ComputeError, match="filed after as_of"):
++        compute(con, "rev * 1", {"rev": "rev"}, date(2023, 4, 1))
++
++
++def test_rejects_unsafe_and_unknown(tmp_path):
++    con = _setup(tmp_path)
++    for expr, inputs in [
++        ("__import__('os')", {}),
++        ("rev.value", {"rev": "rev"}),
++        ("rev + missing", {"rev": "rev"}),          # name not in inputs
++        ("rev", {"rev": "rev", "gp": "gp"}),        # unused input
++    ]:
++        with pytest.raises(ComputeError):
++            compute(con, expr, inputs, date(2023, 6, 1))
++    with pytest.raises(ComputeError, match="no such fact"):
++        compute(con, "x * 1", {"x": "nope"}, date(2023, 6, 1))
++
++
++def test_cross_company_calendar_guard(tmp_path):
++    con = _setup(tmp_path)
++    _fact(con, fact_id="peer_rev", cik=2, field="revenue", value=50.0,
++          pstart=date(2023, 4, 1), pend=date(2023, 6, 30))
++    with pytest.raises(ComputeError, match="calendar"):
++        compute(con, "rev / peer", {"rev": "rev", "peer": "peer_rev"},
++                date(2023, 9, 1))
++
++
++def test_division_by_zero_is_compute_error(tmp_path):
++    con = _setup(tmp_path)
++    _fact(con, fact_id="z", field="capex", value=0.0)
++    with pytest.raises(ComputeError, match="division by zero"):
++        compute(con, "rev / z", {"rev": "rev", "z": "z"}, date(2023, 6, 1))
+diff --git a/tests/test_decompose.py b/tests/test_decompose.py
+new file mode 100644
+index 0000000..e6b4ee0
+--- /dev/null
++++ b/tests/test_decompose.py
+@@ -0,0 +1,20 @@
++from edgar.agent.llm import FakeLLM
++from edgar.eval.decompose import decompose
++from edgar.eval.schemas import Decomposition, RawClaim
++
++
++def test_decompose_passes_markdown_and_returns_claims():
++    scripted = Decomposition(claims=[
++        RawClaim(claim_text="Revenue was $2.1B", claim_type="NUMERIC",
++                 citations=["fA"], claimed_value=2.1)])
++    llm = FakeLLM(parsed=[scripted])
++    claims = decompose(llm, "# memo\n- Revenue was $2.1B [fA]")
++    assert claims[0].citations == ["fA"]
++    assert "Revenue was $2.1B [fA]" in llm.parse_calls[0]["prompt"]
++
++
++def test_decompose_prompt_demands_atomicity_and_verbatim_ids():
++    llm = FakeLLM(parsed=[Decomposition(claims=[])])
++    decompose(llm, "x")
++    p = llm.parse_calls[0]["prompt"].lower()
++    assert "atomic" in p and "verbatim" in p
+diff --git a/tests/test_episodic.py b/tests/test_episodic.py
+new file mode 100644
+index 0000000..7d3cd6b
+--- /dev/null
++++ b/tests/test_episodic.py
+@@ -0,0 +1,56 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.memory.episodic import (
++    create_memory_tables, recall_conclusions, record_conclusions,
++    save_session)
++
++
++def _db(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_memory_tables(con)
++    return con
++
++
++def _session(con, sid, as_of, conclusions):
++    save_session(con, session_id=sid, cik=1, as_of=as_of,
++                 config_version="v1", trace_id=f"tr-{sid}", question=None,
++                 recalled_conclusion_ids=[])
++    record_conclusions(con, session_id=sid, cik=1, conclusions=conclusions,
++                       learned_as_of=as_of, trace_id=f"tr-{sid}")
++
++
++def test_recall_blocks_later_learned_conclusions(tmp_path):
++    con = _db(tmp_path)
++    _session(con, "s23", date(2023, 6, 1), ["margins compressed in 2022"])
++    _session(con, "s25", date(2025, 6, 1), ["margins recovered by 2025"])
++    got = recall_conclusions(con, cik=1, as_of=date(2023, 12, 31))
++    assert [c.conclusion for c in got] == ["margins compressed in 2022"]
++    got_25 = recall_conclusions(con, cik=1, as_of=date(2025, 12, 31))
++    assert len(got_25) == 2
++    assert got_25[0].learned_as_of == date(2025, 6, 1)   # recency first
++
++
++def test_recall_is_cik_scoped_and_limited(tmp_path):
++    con = _db(tmp_path)
++    for i in range(7):
++        _session(con, f"s{i}", date(2023, 1, 1 + i), [f"conclusion {i}"])
++    save_session(con, session_id="other", cik=2, as_of=date(2023, 6, 1),
++                 config_version="v1", trace_id="t", question=None,
++                 recalled_conclusion_ids=[])
++    record_conclusions(con, session_id="other", cik=2,
++                       conclusions=["theirs"],
++                       learned_as_of=date(2023, 6, 1), trace_id="t")
++    got = recall_conclusions(con, cik=1, as_of=date(2024, 1, 1), limit=5)
++    assert len(got) == 5 and all(c.cik == 1 for c in got)
++
++
++def test_conclusion_ids_are_stable(tmp_path):
++    con = _db(tmp_path)
++    ids1 = record_conclusions(con, session_id="s", cik=1, conclusions=["x"],
++                              learned_as_of=date(2023, 1, 1), trace_id="t")
++    ids2 = record_conclusions(con, session_id="s", cik=1, conclusions=["x"],
++                              learned_as_of=date(2023, 1, 1), trace_id="t")
++    assert ids1 == ids2
++    n = con.execute("SELECT count(*) FROM session_conclusion").fetchone()[0]
++    assert n == 1
+diff --git a/tests/test_facts_tools.py b/tests/test_facts_tools.py
+new file mode 100644
+index 0000000..ac7489c
+--- /dev/null
++++ b/tests/test_facts_tools.py
+@@ -0,0 +1,62 @@
++from datetime import date
++
++import pytest
++
++from edgar.db import connect, init_schema
++from edgar.curate.facts import create_fact_table
++from edgar.curate.mapping import create_mapping_table
++from edgar.tools.facts_tools import get_facts, list_available_facts
++
++
++def _db(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    init_schema(con)
++    create_fact_table(con)
++    create_mapping_table(con)
++    return con
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def test_get_facts_returns_visible_fact_and_flags_missing(tmp_path):
++    con = _db(tmp_path)
++    _fact(con, fact_id="f1", field="revenue", filed=date(2023, 5, 1))
++    r = get_facts(con, 1, ["revenue", "inventory"],
++                  date(2023, 1, 1), date(2023, 3, 31), as_of=date(2023, 6, 1))
++    assert [f.fact_id for f in r.facts] == ["f1"]
++    missing = {m.canonical_field: m.status for m in r.missing}
++    assert missing == {"inventory": "NOT_DISCLOSED"}
++
++
++def test_get_facts_hides_later_filings_and_reports_not_yet_filed(tmp_path):
++    con = _db(tmp_path)
++    _fact(con, fact_id="f1", field="revenue", filed=date(2023, 5, 1))
++    r = get_facts(con, 1, ["revenue"], date(2023, 1, 1), date(2023, 3, 31),
++                  as_of=date(2023, 4, 1))   # before the filing
++    assert r.facts == []
++    assert r.missing[0].status == "NOT_YET_FILED"
++
++
++def test_list_available_facts_orders_new_to_old_and_respects_as_of(tmp_path):
++    con = _db(tmp_path)
++    _fact(con, fact_id="q1", pend=date(2023, 3, 31), filed=date(2023, 5, 1))
++    _fact(con, fact_id="q2", pend=date(2023, 6, 30), filed=date(2023, 8, 1))
++    rep = list_available_facts(con, 1, as_of=date(2023, 6, 1))
++    assert [e.period_end for e in rep.entries] == [date(2023, 3, 31)]
++    assert rep.entries[0].statuses["revenue"] == "AVAILABLE"
++    assert rep.entries[0].statuses["inventory"] == "NOT_DISCLOSED"
++
++
++def test_get_facts_rejects_unknown_field(tmp_path):
++    con = _db(tmp_path)
++    with pytest.raises(ValueError, match="unknown canonical field"):
++        get_facts(con, 1, ["ebitda"], date(2023, 1, 1), date(2023, 3, 31),
++                  as_of=date(2023, 6, 1))
+diff --git a/tests/test_guardrails.py b/tests/test_guardrails.py
+new file mode 100644
+index 0000000..23c8d65
+--- /dev/null
++++ b/tests/test_guardrails.py
+@@ -0,0 +1,87 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.curate.facts import create_fact_table
++from edgar.narrative.store import create_narrative_tables
++from edgar.tools.compute import compute, create_derivation_table
++from edgar.agent.memo import Claim, Memo, MemoSection
++from edgar.agent.guardrails import _is_numeric_claim, check_memo, repair_memo
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _con(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_fact_table(con)
++    create_derivation_table(con)
++    create_narrative_tables(con)
++    return con
++
++
++def _memo(claims, hypotheses=()):
++    return Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[MemoSection(slug="growth", title="Growth",
++                                      claims=list(claims))],
++                hypotheses=list(hypotheses))
++
++
++def test_numeric_claim_detector():
++    assert _is_numeric_claim("Revenue was $2.1B")
++    assert _is_numeric_claim("margin fell 240 bps")
++    assert not _is_numeric_claim("Management discussed freight costs")
++
++
++def test_uncited_numeric_claim_is_violation_and_repair_downgrades(tmp_path):
++    con = _con(tmp_path)
++    memo = _memo([Claim(text="Revenue was 100")])
++    rep = check_memo(con, memo, date(2023, 6, 1))
++    assert rep.rejection_count == 1
++    assert rep.violations[0].rule == "needs_citation"
++    fixed = repair_memo(memo, rep)
++    c = fixed.sections[0].claims[0]
++    assert c.is_hypothesis and c.text.startswith("[UNVERIFIED")
++
++
++def test_citation_must_resolve_and_respect_as_of(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    _fact(con, fact_id="fLate", filed=date(2024, 5, 1))
++    ok = _memo([Claim(text="Revenue was 100", citations=["fA"])])
++    assert check_memo(con, ok, date(2023, 6, 1)).rejection_count == 0
++    ghost = _memo([Claim(text="Revenue was 100", citations=["nope"])])
++    assert check_memo(con, ghost, date(2023, 6, 1)).violations[0].rule == \
++        "citation_resolves"
++    leak = _memo([Claim(text="Revenue was 100", citations=["fLate"])])
++    assert check_memo(con, leak, date(2023, 6, 1)).violations[0].rule == \
++        "citation_resolves"
++
++
++def test_derivation_recompute_checked(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    c = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
++                date(2023, 6, 1))
++    good = _memo([Claim(text="Gross margin was 40%",
++                        citations=[c.derivation_id])])
++    assert check_memo(con, good, date(2023, 6, 1)).rejection_count == 0
++    con.execute("UPDATE derivation SET value = 0.9 WHERE derivation_id = ?",
++                [c.derivation_id])
++    assert check_memo(con, good, date(2023, 6, 1)).violations[0].rule == \
++        "derivation_recomputes"
++
++
++def test_labeled_hypotheses_exempt_from_citation_rule(tmp_path):
++    con = _con(tmp_path)
++    memo = _memo([], hypotheses=[Claim(text="Margins sit 800 bps below "
++                                            "peers",
++                                       is_hypothesis=True)])
++    assert check_memo(con, memo, date(2023, 6, 1)).rejection_count == 0
+diff --git a/tests/test_judges.py b/tests/test_judges.py
+new file mode 100644
+index 0000000..9529f49
+--- /dev/null
++++ b/tests/test_judges.py
+@@ -0,0 +1,97 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.curate.facts import create_fact_table
++from edgar.narrative.store import create_narrative_tables
++from edgar.memory.episodic import create_memory_tables, save_session
++from edgar.tools.compute import compute, create_derivation_table
++from edgar.agent.llm import FakeLLM
++from edgar.eval.judges import judge_claim, temporal_leakage
++from edgar.eval.schemas import JudgeOpinion, RawClaim
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _con(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_fact_table(con)
++    create_derivation_table(con)
++    create_narrative_tables(con)
++    create_memory_tables(con)
++    return con
++
++
++def test_numeric_supported_scale_aware(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", value=2_110_000_000.0, filed=date(2023, 5, 1))
++    c = RawClaim(claim_text="Revenue was $2.1B", claim_type="NUMERIC",
++                 citations=["fA"], claimed_value=2.1)
++    v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
++    assert v.status == "SUPPORTED"
++
++
++def test_numeric_contradicted_when_value_off(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", value=2_110_000_000.0, filed=date(2023, 5, 1))
++    c = RawClaim(claim_text="Revenue was $3.4B", claim_type="NUMERIC",
++                 citations=["fA"], claimed_value=3.4)
++    assert judge_claim(con, FakeLLM(), c,
++                       as_of=date(2023, 6, 1)).status == "CONTRADICTED"
++
++
++def test_derived_recomputes_from_cited_derivation(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
++                date(2023, 6, 1))
++    good = RawClaim(claim_text="Gross margin was 40%", claim_type="DERIVED",
++                    citations=[d.derivation_id], claimed_value=0.40)
++    assert judge_claim(con, FakeLLM(), good,
++                       as_of=date(2023, 6, 1)).status == "SUPPORTED"
++
++
++def test_attributed_uses_llm_over_span_text(tmp_path):
++    con = _con(tmp_path)
++    con.execute("INSERT INTO span VALUES ('sB','d1',1,'a-1','10-K',"
++                "'Item 7',DATE '2023-05-01',0,40,"
++                "'Freight costs pressured margins.',NULL)")
++    llm = FakeLLM(parsed=[JudgeOpinion(status="SUPPORTED",
++                                       reason="text says exactly this")])
++    c = RawClaim(claim_text="Management cited freight costs",
++                 claim_type="ATTRIBUTED", citations=["sB"])
++    v = judge_claim(con, llm, c, as_of=date(2023, 6, 1))
++    assert v.status == "SUPPORTED"
++    assert "Freight costs pressured" in llm.parse_calls[0]["prompt"]
++
++
++def test_unsupported_short_circuits_without_llm(tmp_path):
++    con = _con(tmp_path)
++    c = RawClaim(claim_text="EBITDA doubled", claim_type="UNSUPPORTED")
++    v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
++    assert v.status == "UNSUPPORTED"
++
++
++def test_temporal_leakage_both_surfaces(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fLate", filed=date(2024, 5, 1))
++    save_session(con, session_id="S1", cik=1, as_of=date(2023, 6, 1),
++                 config_version="v1", trace_id="t", question=None,
++                 recalled_conclusion_ids=["C-x"])
++    con.execute("INSERT INTO session_conclusion VALUES "
++                "('C-x','s0',1,'future conclusion',DATE '2025-01-01','t')")
++    claims = [RawClaim(claim_text="x", claim_type="NUMERIC",
++                       citations=["fLate"], claimed_value=1.0)]
++    problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1),
++                                session_id="S1")
++    assert len(problems) == 2
++    assert any("fLate" in p for p in problems)
++    assert any("C-x" in p for p in problems)
+diff --git a/tests/test_ledger.py b/tests/test_ledger.py
+new file mode 100644
+index 0000000..e1a4802
+--- /dev/null
++++ b/tests/test_ledger.py
+@@ -0,0 +1,42 @@
++from edgar.agent.ledger import EvidenceLedger, LedgerEntry
++
++
++def _big_ledger(n=50):
++    led = EvidenceLedger()
++    for i in range(n):
++        led.append(LedgerEntry(kind="fact", identifier=f"f{i:04d}",
++                               gist=("revenue grew strongly " * 30),
++                               section="growth",
++                               payload="x" * 2000))
++    return led
++
++
++def test_compaction_never_drops_identifiers():
++    led = _big_ledger()
++    before = led.identifiers()
++    freed = led.compact()
++    assert freed > 0
++    assert led.identifiers() == before      # THE inviolable rule (spec §7.2)
++    assert led.size_chars() < 50 * 2000
++
++
++def test_compaction_truncates_gists_and_drops_payloads():
++    led = _big_ledger()
++    led.compact()
++    assert all(e.payload == "" for e in led.entries)
++    assert all(len(e.gist) <= 200 for e in led.entries)
++
++
++def test_render_leads_with_identifier_and_filters_by_section():
++    led = EvidenceLedger()
++    led.append(LedgerEntry("fact", "fA", "rev FY23", "growth"))
++    led.append(LedgerEntry("span", "sB", "mgmt on freight", "management"))
++    out = led.render(section="growth")
++    assert out.splitlines() == ["[fA] (fact, §growth) rev FY23"]
++    assert "[sB]" in led.render()
++
++
++def test_size_counts_gist_and_payload():
++    led = EvidenceLedger()
++    led.append(LedgerEntry("note", "", "abc", "growth", payload="12345"))
++    assert led.size_chars() >= 8
+diff --git a/tests/test_llm.py b/tests/test_llm.py
+new file mode 100644
+index 0000000..a75b375
+--- /dev/null
++++ b/tests/test_llm.py
+@@ -0,0 +1,36 @@
++import pytest
++from pydantic import BaseModel
++
++from edgar.agent.llm import FakeLLM, LLMTurn, ToolCall
++
++
++class _Out(BaseModel):
++    answer: str
++
++
++def test_fake_llm_plays_script_in_order():
++    t1 = LLMTurn(text="", tool_calls=[ToolCall("t1", "get_facts",
++                                               {"cik": 1})],
++                 raw_content=[], usage_in=10, usage_out=5)
++    t2 = LLMTurn(text="done", tool_calls=[], raw_content=[], usage_in=8,
++                 usage_out=4)
++    llm = FakeLLM(turns=[t1, t2], parsed=[_Out(answer="hi")])
++    assert llm.tool_turn(system="s", messages=[],
++                         tools=[]).tool_calls[0].name == "get_facts"
++    assert llm.tool_turn(system="s", messages=[], tools=[]).text == "done"
++    assert llm.parse_structured(system="s", prompt="p",
++                                output_model=_Out).answer == "hi"
++
++
++def test_fake_llm_raises_when_script_exhausted():
++    llm = FakeLLM()
++    with pytest.raises(AssertionError, match="script exhausted"):
++        llm.tool_turn(system="s", messages=[], tools=[])
++
++
++def test_fake_llm_records_calls_for_assertions():
++    llm = FakeLLM(turns=[LLMTurn("x", [], [], 1, 1)])
++    llm.tool_turn(system="SYS", messages=[{"role": "user", "content": "u"}],
++                  tools=[{"name": "compute"}])
++    assert llm.calls[0]["system"] == "SYS"
++    assert llm.calls[0]["tools"][0]["name"] == "compute"
+diff --git a/tests/test_memo.py b/tests/test_memo.py
+new file mode 100644
+index 0000000..b972c8e
+--- /dev/null
++++ b/tests/test_memo.py
+@@ -0,0 +1,32 @@
++from datetime import date
++
++from edgar.agent.memo import Claim, Memo, MemoSection, render_markdown
++
++
++def _memo():
++    return Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++                sections=[MemoSection(slug="growth", title="Growth",
++                                      narrative="Revenue rose.",
++                                      claims=[Claim(text="Revenue was 100",
++                                                    citations=["fA"])]),
++                          MemoSection(slug="working_capital",
++                                      title="Working capital",
++                                      status="status_code",
++                                      status_note="inventory: "
++                                                  "NOT_DISCLOSED")],
++                hypotheses=[Claim(text="Pricing lags peers",
++                                  is_hypothesis=True)])
++
++
++def test_render_includes_citations_and_status_codes():
++    md = render_markdown(_memo())
++    assert "## 2. Growth" not in md
++    assert "## Growth" in md
++    assert "[fA]" in md
++    assert "NOT_DISCLOSED" in md
++    assert "Hypothesis" in md and "Pricing lags peers" in md
++
++
++def test_render_shows_as_of_and_identity():
++    md = render_markdown(_memo())
++    assert "2023-06-01" in md and "ACME" in md
+diff --git a/tests/test_metrics.py b/tests/test_metrics.py
+new file mode 100644
+index 0000000..944aac7
+--- /dev/null
++++ b/tests/test_metrics.py
+@@ -0,0 +1,43 @@
++from edgar.eval.metrics import compute_metrics, to_markdown
++from edgar.eval.schemas import RawClaim, Verdict
++
++
++def _v(text, ctype, status, cites=("x",)):
++    return Verdict(claim=RawClaim(claim_text=text, claim_type=ctype,
++                                  citations=list(cites)),
++                   status=status, reason="r")
++
++
++_META = {"memo_path": "m.json", "config_version": "v1+deadbeef",
++         "session_id": "S1", "as_of": "2023-06-01",
++         "guardrail_rejections": 3}
++
++
++def test_rates_and_breakdowns():
++    verdicts = [
++        _v("a", "NUMERIC", "SUPPORTED"),
++        _v("b", "DERIVED", "CONTRADICTED"),
++        _v("c", "UNSUPPORTED", "UNSUPPORTED", cites=()),
++        _v("d", "ATTRIBUTED", "SUPPORTED"),
++    ]
++    r = compute_metrics(verdicts, ["leak-1"], memo_meta=_META)
++    assert r.n_claims == 4
++    assert r.unsupported_rate == 0.25
++    assert r.contradiction_rate == 0.25
++    assert r.citation_coverage == 0.75
++    assert r.by_type["NUMERIC"] == 1 and r.by_status["SUPPORTED"] == 2
++    assert r.temporal_leakage_count == 1
++    assert r.guardrail_rejections == 3
++
++
++def test_markdown_report_carries_the_headline_numbers():
++    r = compute_metrics([_v("a", "NUMERIC", "SUPPORTED")], [],
++                        memo_meta=_META)
++    md = to_markdown(r)
++    assert "unsupported" in md.lower() and "v1+deadbeef" in md
++    assert "temporal" in md.lower()
++
++
++def test_empty_memo_does_not_divide_by_zero():
++    r = compute_metrics([], [], memo_meta=_META)
++    assert r.n_claims == 0 and r.unsupported_rate == 0.0
+diff --git a/tests/test_narrative_fetch.py b/tests/test_narrative_fetch.py
+new file mode 100644
+index 0000000..ad7399b
+--- /dev/null
++++ b/tests/test_narrative_fetch.py
+@@ -0,0 +1,49 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.narrative.store import create_narrative_tables
++from edgar.narrative.fetch import FilingDoc, fetch_narratives, verify_store
++
++
++def _fake_fetcher(cik, n):
++    return [FilingDoc(cik=cik, accession=f"acc-{cik}-{i}", form="10-K",
++                      filed_date=date(2024 - i, 10, 1),
++                      fiscal_year=str(2024 - i),
++                      items={"Item 1": "We sell widgets. " * 60,
++                             "Item 1A": "Risks include competition. " * 60,
++                             "Item 7": "Revenue grew due to pricing. " * 60})
++            for i in range(n)]
++
++
++def test_fetch_stores_one_row_per_item(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    report = fetch_narratives(con, [1, 2], per_company=2,
++                              fetcher=_fake_fetcher)
++    n = con.execute("SELECT count(*) FROM narrative_doc").fetchone()[0]
++    assert n == 2 * 2 * 3           # ciks x filings x items
++    assert report["docs"] == 12 and report["companies"] == 2
++    assert verify_store(con) == []
++
++
++def test_fetch_is_idempotent(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    fetch_narratives(con, [1], per_company=1, fetcher=_fake_fetcher)
++    fetch_narratives(con, [1], per_company=1, fetcher=_fake_fetcher)
++    n = con.execute("SELECT count(*) FROM narrative_doc").fetchone()[0]
++    assert n == 3
++
++
++def test_verify_flags_short_and_missing_items(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++
++    def bad_fetcher(cik, n):
++        return [FilingDoc(cik=cik, accession="a", form="10-K",
++                          filed_date=date(2024, 10, 1), fiscal_year="2024",
++                          items={"Item 1": "too short"})]
++    fetch_narratives(con, [1], per_company=1, fetcher=bad_fetcher)
++    problems = verify_store(con)
++    assert any("short" in p for p in problems)
++    assert any("Item 7" in p for p in problems)
+diff --git a/tests/test_narrative_search.py b/tests/test_narrative_search.py
+new file mode 100644
+index 0000000..610b36f
+--- /dev/null
++++ b/tests/test_narrative_search.py
+@@ -0,0 +1,76 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.narrative.embedder import EMBED_DIM, FakeEmbedder
++from edgar.narrative.store import (
++    chunk_text, create_narrative_tables, index_spans, search_spans)
++
++
++def _doc(con, doc_id, text, cik=1, accn="a-1", item="Item 7",
++         filed=date(2023, 10, 1)):
++    con.execute("INSERT INTO narrative_doc VALUES (?,?,?,?,?,?,?,?)",
++                [doc_id, cik, accn, "10-K", filed, "2023", item, text])
++
++
++def test_chunk_offsets_roundtrip():
++    text = ("Alpha paragraph. " * 30 + "\n\n") * 5
++    chunks = chunk_text(text)
++    assert chunks, "no chunks produced"
++    for s, e in chunks:
++        assert 0 <= s < e <= len(text)
++        assert text[s:e].strip()
++
++
++def test_fake_embedder_is_deterministic_and_sized():
++    e = FakeEmbedder()
++    a, b = e.encode(["hello"]), e.encode(["hello"])
++    assert a == b and len(a[0]) == EMBED_DIM
++
++
++def test_index_and_search_respects_as_of(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    _doc(con, "d1", "Freight costs pressured gross margin this year. " * 40,
++         filed=date(2023, 10, 1))
++    _doc(con, "d2", "Freight costs normalized in the following year. " * 40,
++         cik=1, accn="a-2", filed=date(2024, 10, 1))
++    n = index_spans(con, FakeEmbedder())
++    assert n > 0
++    hits = search_spans(con, "freight costs", cik=1,
++                        as_of=date(2023, 12, 31), k=5,
++                        embedder=FakeEmbedder())
++    assert hits and all(h.filed_date <= date(2023, 12, 31) for h in hits)
++    assert {h.accession for h in hits} == {"a-1"}
++
++
++def test_span_text_matches_offsets(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    body = "Working capital consumed cash due to inventory build. " * 40
++    _doc(con, "d1", body)
++    index_spans(con, FakeEmbedder())
++    h = search_spans(con, "inventory build", cik=1, as_of=date(2024, 1, 1),
++                     k=1, embedder=FakeEmbedder())[0]
++    assert body[h.char_start:h.char_end] == h.text
++
++
++def test_item_filter(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    _doc(con, "d1", "Risky business risks. " * 40, item="Item 1A")
++    _doc(con, "d2", "Discussion of results. " * 40, accn="a-2",
++         item="Item 7")
++    index_spans(con, FakeEmbedder())
++    hits = search_spans(con, "risks", cik=1, as_of=date(2024, 1, 1), k=5,
++                        embedder=FakeEmbedder(), items=["Item 1A"])
++    assert hits and all(h.item == "Item 1A" for h in hits)
++
++
++def test_index_is_idempotent(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_narrative_tables(con)
++    _doc(con, "d1", "Some narrative text here. " * 40)
++    index_spans(con, FakeEmbedder())
++    n1 = con.execute("SELECT count(*) FROM span").fetchone()[0]
++    index_spans(con, FakeEmbedder())
++    assert con.execute("SELECT count(*) FROM span").fetchone()[0] == n1
+diff --git a/tests/test_peers.py b/tests/test_peers.py
+new file mode 100644
+index 0000000..dac19ff
+--- /dev/null
++++ b/tests/test_peers.py
+@@ -0,0 +1,62 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.curate.facts import create_fact_table
++from edgar.tools.peers import get_peer_set
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _company(con, cik, sic, sector="manufacturing", status="eligible"):
++    con.execute(
++        "INSERT INTO company VALUES (?,?,?,?,?,?,?,?)",
++        [cik, f"CO{cik}", sic, sector, 12, date(2019, 1, 1), status, None])
++
++
++def _db(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_fact_table(con)
++    con.execute("""CREATE TABLE company (cik BIGINT, name VARCHAR,
++        sic VARCHAR, sector VARCHAR, fiscal_year_end_month INTEGER,
++        first_filing_date DATE, eligibility_status VARCHAR,
++        exclusion_reason VARCHAR)""")
++    return con
++
++
++def test_same_two_digit_sic_and_visibility(tmp_path):
++    con = _db(tmp_path)
++    _company(con, 1, "3571"); _company(con, 2, "3572")
++    _company(con, 3, "2911")
++    _fact(con, fact_id="a", cik=2, filed=date(2023, 5, 1))
++    _fact(con, fact_id="b", cik=3, filed=date(2023, 5, 1))
++    ps = get_peer_set(con, 1, as_of=date(2023, 6, 1), min_peers=1)
++    assert [p.cik for p in ps.peers] == [2]
++    assert "35" in ps.selection_rule
++
++
++def test_ineligible_and_unfiled_peers_excluded(tmp_path):
++    con = _db(tmp_path)
++    _company(con, 1, "3571")
++    _company(con, 2, "3572", status="excluded")
++    _company(con, 4, "3579")
++    _fact(con, fact_id="a", cik=2, filed=date(2023, 5, 1))
++    _fact(con, fact_id="c", cik=4, filed=date(2024, 5, 1))
++    ps = get_peer_set(con, 1, as_of=date(2023, 6, 1), min_peers=1)
++    assert ps.peers == []
++
++
++def test_widens_to_sector_when_sic_too_thin(tmp_path):
++    con = _db(tmp_path)
++    _company(con, 1, "3571"); _company(con, 5, "2911")
++    _fact(con, fact_id="e", cik=5, filed=date(2023, 5, 1))
++    ps = get_peer_set(con, 1, as_of=date(2023, 6, 1), min_peers=1)
++    assert [p.cik for p in ps.peers] == [5]
++    assert "sector" in ps.selection_rule
+diff --git a/tests/test_procedural.py b/tests/test_procedural.py
+new file mode 100644
+index 0000000..cec919a
+--- /dev/null
++++ b/tests/test_procedural.py
+@@ -0,0 +1,19 @@
++from edgar.memory.procedural import SECTIONS, load_rubric, load_system_prompt
++
++
++def test_eleven_sections_with_stable_slugs():
++    assert len(SECTIONS) == 11
++    assert [s[1] for s in SECTIONS][:3] == ["business", "growth",
++                                            "profitability"]
++
++
++def test_every_section_has_a_nonempty_rubric():
++    for _, slug, _ in SECTIONS:
++        text = load_rubric(slug)
++        assert len(text) > 100, f"rubric {slug} too thin"
++
++
++def test_system_prompt_states_the_three_laws():
++    text = load_system_prompt()
++    for needle in ("cite", "as_of", "compute"):
++        assert needle in text.lower()
+diff --git a/tests/test_tracing.py b/tests/test_tracing.py
+new file mode 100644
+index 0000000..3710612
+--- /dev/null
++++ b/tests/test_tracing.py
+@@ -0,0 +1,25 @@
++from edgar.ops.tracing import NoopTracer, RecordingTracer, make_tracer
++
++
++def test_noop_supports_nesting_and_flush():
++    t = NoopTracer()
++    with t.span("outer", cik=1) as s:
++        s.event("tool_call", tool="get_facts")
++        with t.span("inner") as s2:
++            s2.event("x")
++    t.flush()
++    assert t.trace_id.startswith("trace-")
++
++
++def test_recording_tracer_captures_spans_and_events():
++    t = RecordingTracer()
++    with t.span("retrieve", section="growth") as s:
++        s.event("tool_call", tool="compute")
++    assert ("retrieve", {"section": "growth"}) in t.spans
++    assert t.events == [("retrieve", "tool_call", {"tool": "compute"})]
++
++
++def test_make_tracer_defaults_to_noop(monkeypatch):
++    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
++    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
++    assert isinstance(make_tracer("memo"), NoopTracer)

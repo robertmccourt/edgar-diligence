@@ -1,0 +1,3 @@
+# Task 10 report — controller-transcribed (see Task 3 ruling)
+Status: DONE. 179 tests pass (5 new). prompts/system.md + 11 section rubrics (growth/working_capital verbatim from plan; other 9 authored to the plan's per-section content specs), config/versions/v1.yaml, memory/procedural.py, agent/agent_config.py (hash-versioned config).
+Deviations (ruled): (1) system.md amended to name `as_of` literally — the plan's test required the token but its prompt text said "cutoff date"; amended content, not test. (2) A qa.md rubric was drafted then deleted — plan's nodes inline the question-mode rubric, and a file would be dead.

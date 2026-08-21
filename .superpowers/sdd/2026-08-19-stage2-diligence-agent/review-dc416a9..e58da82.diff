@@ -1,0 +1,964 @@
+# Review package: dc416a9..e58da82
+
+## Commits
+e58da82 fix(review): resolve consolidated review findings 1-8
+
+## Files changed
+ prompts/sections/reliability.md | 14 +++++----
+ pyproject.toml                  |  2 +-
+ src/edgar/agent/guardrails.py   | 58 ++++++++++++++++++------------------
+ src/edgar/agent/nodes.py        | 33 ++++++++++++++++++---
+ src/edgar/agent/tool_defs.py    | 34 ++++++++++++++++++++-
+ src/edgar/eval/adversarial.py   |  5 ++--
+ src/edgar/eval/judges.py        |  4 +--
+ src/edgar/tools/facts_tools.py  | 26 +++++++++++++++-
+ src/edgar/tools/visibility.py   | 65 ++++++++++++++++++++++++++++++++++++++++
+ tests/test_adversarial.py       | 29 ++++++++++++++++++
+ tests/test_agent_nodes.py       | 65 +++++++++++++++++++++++++++++++++++++++-
+ tests/test_facts_tools.py       | 25 +++++++++++++++-
+ tests/test_guardrails.py        | 23 ++++++++++++++
+ tests/test_judges.py            | 20 +++++++++++++
+ tests/test_visibility.py        | 66 +++++++++++++++++++++++++++++++++++++++++
+ 15 files changed, 420 insertions(+), 49 deletions(-)
+
+## Diff
+diff --git a/prompts/sections/reliability.md b/prompts/sections/reliability.md
+index 22dc048..4fb6b25 100644
+--- a/prompts/sections/reliability.md
++++ b/prompts/sections/reliability.md
+@@ -1,19 +1,21 @@
+ # Section: Data reliability flags
+ 
+ Question: how trustworthy are this company's reported figures — do they
+ restate, and how late do they file?
+ 
+-Method: `get_facts` results carry filed_date and accession per fact.
+-When the same figure (same field, same period_start/period_end, same
+-unit) appears with MULTIPLE filed versions in your evidence, that is a
+-restatement trail: cite BOTH fact_ids and state the values and filing
+-dates. The bitemporal store preserves every version precisely so this
+-section can exist.
++Method: `get_facts` results carry filed_date and accession per fact. When
++a figure looks like it may have been revised — or you simply want to
++check — call `get_fact_history(cik, canonical_field, period_end,
++period_start, period_type, unit)` for that exact figure. If it returns
++MULTIPLE fact_ids, that is a restatement trail: cite ALL of them and
++state the values and filing dates. The bitemporal store preserves every
++version precisely so this section can exist; `get_fact_history` is the
++only tool that surfaces more than the latest one.
+ 
+ Also observe filing lag: the gap between period_end and filed_date on
+ the facts you retrieved — flag a company whose lag is long or worsening,
+ citing the fact_ids whose dates show it.
+ 
+ No restatements observed in the evidence gathered is itself a statement
+ worth making — phrase it as scoped to the periods examined, not as a
+ blanket claim.
+diff --git a/pyproject.toml b/pyproject.toml
+index 8e7daa0..3ca1b60 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,21 +1,21 @@
+ [project]
+ name = "edgar-diligence"
+ version = "0.1.0"
+ requires-python = ">=3.11"
+ dependencies = [
+     "duckdb>=1.0",
+     "httpx>=0.27",
+     "pydantic>=2.7",
+     "pydantic-settings>=2.3",
+     "langgraph>=1.2,<2",
+-    "anthropic>=0.125",
++    "anthropic>=1.0,<2",
+     "pyyaml>=6",
+     "langfuse>=4,<5",
+ ]
+ 
+ [project.optional-dependencies]
+ dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+ narrative = ["edgartools>=5.51", "sentence-transformers>=6"]
+ 
+ [build-system]
+ requires = ["hatchling"]
+diff --git a/src/edgar/agent/guardrails.py b/src/edgar/agent/guardrails.py
+index d44b0d8..2afbf84 100644
+--- a/src/edgar/agent/guardrails.py
++++ b/src/edgar/agent/guardrails.py
+@@ -1,67 +1,61 @@
+ import re
+ from datetime import date
+ 
+ import duckdb
+ from pydantic import BaseModel
+ 
+ from edgar.agent.memo import Claim, Memo
+-from edgar.tools.compute import ComputeError, recompute
++from edgar.tools.visibility import check_integrity, visible_asof
+ 
+-_NUMERIC = re.compile(
+-    r"(\d[\d,.]*\s*(%|bps|bn|billion|million|x\b)|[$€£]\s*\d|\d{3,})",
++# Money / percent / bps / magnitude-word phrasings: always a numeric claim,
++# regardless of any date-shaped text elsewhere in the sentence.
++_MONEY_PCT = re.compile(
++    r"(\d[\d,.]*\s*(%|bps|bn|billion|million|x\b)|[$€£]\s*\d)",
+     re.IGNORECASE)
++# Date-shaped text that must NOT by itself count as a numeric claim: ISO
++# dates and bare 19xx/20xx years (e.g. "Fiscal 2023", "as of 2023-05-01").
++_ISO_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
++_BARE_YEAR = re.compile(r"\b(19|20)\d{2}\b")
++# Any other 3+ digit run (e.g. "154000") still counts.
++_LARGE_NUMBER = re.compile(r"\d{3,}")
+ 
+ 
+ def _is_numeric_claim(text: str) -> bool:
+-    return bool(_NUMERIC.search(text))
++    if _MONEY_PCT.search(text):
++        return True
++    stripped = _BARE_YEAR.sub("", _ISO_DATE.sub("", text))
++    return bool(_LARGE_NUMBER.search(stripped))
+ 
+ 
+ class Violation(BaseModel):
+     section: str
+     claim_text: str
+     rule: str
+     detail: str
+ 
+ 
+ class GuardrailReport(BaseModel):
+     violations: list[Violation]
+     checked_claims: int
+     rejection_count: int
+ 
+ 
+ def _visible(con, cid: str, as_of: date) -> str | None:
+-    """Return None when the id exists and is visible as of as_of,
+-    else a human-readable problem."""
+-    if cid.startswith("D-"):
+-        row = con.execute("SELECT as_of, value FROM derivation "
+-                          "WHERE derivation_id = ?", [cid]).fetchone()
+-        if row is None:
+-            return f"unknown derivation {cid}"
+-        if row[0] > as_of:
+-            return f"derivation {cid} computed for later as_of {row[0]}"
+-        try:
+-            again = recompute(con, cid)
+-        except ComputeError as exc:
+-            return f"derivation {cid} does not recompute: {exc}"
+-        if abs(again.value - row[1]) > 1e-9 * max(1.0, abs(row[1])):
+-            return (f"derivation {cid} stored {row[1]} but recomputes "
+-                    f"to {again.value}")
+-        return None
+-    for table, col in (("fact", "fact_id"), ("span", "span_id")):
+-        row = con.execute(
+-            f"SELECT filed_date FROM {table} WHERE {col} = ?",
+-            [cid]).fetchone()
+-        if row is not None:
+-            return None if row[0] <= as_of else \
+-                f"{table} {cid} filed {row[0]} after as_of {as_of}"
+-    return f"unknown identifier {cid}"
++    """Return None when the id exists, is visible as of as_of, AND (for a
++    derivation) still recomputes cleanly — else a human-readable problem.
++    Composes the date-only check with the integrity check; see
++    `edgar.tools.visibility` for why those are two functions."""
++    problem = visible_asof(con, cid, as_of)
++    if problem is not None:
++        return problem
++    return check_integrity(con, cid)
+ 
+ 
+ def check_memo(con: duckdb.DuckDBPyConnection, memo: Memo,
+                as_of: date) -> GuardrailReport:
+     violations: list[Violation] = []
+     checked = 0
+ 
+     def _check(claim: Claim, section: str, citation_required: bool) -> None:
+         nonlocal checked
+         checked += 1
+@@ -98,11 +92,17 @@ def repair_memo(memo: Memo, report: GuardrailReport) -> Memo:
+     """Downgrade, never delete (spec §7.3). Failing claims become labeled
+     hypotheses in place; rejection stays visible in the memo itself."""
+     bad = {(v.section, v.claim_text) for v in report.violations}
+     fixed = memo.model_copy(deep=True)
+     for s in fixed.sections:
+         for c in s.claims:
+             if (s.slug, c.text) in bad:
+                 c.is_hypothesis = True
+                 c.text = "[UNVERIFIED — downgraded by guardrail] " + c.text
+                 c.citations = []
++    for c in fixed.hypotheses:
++        if ("hypotheses", c.text) in bad:
++            # already labeled speculation — no downgrade, just strip the
++            # citations that don't hold up.
++            c.text = "[UNVERIFIED — downgraded by guardrail] " + c.text
++            c.citations = []
+     return fixed
+diff --git a/src/edgar/agent/nodes.py b/src/edgar/agent/nodes.py
+index b067cfc..1f842f5 100644
+--- a/src/edgar/agent/nodes.py
++++ b/src/edgar/agent/nodes.py
+@@ -89,33 +89,58 @@ def retrieve_section(state: dict) -> dict:
+ 
+ def compact_node(state: dict) -> dict:
+     cfg = state["config"]
+     if state["ledger"].size_chars() > cfg.compaction_threshold_chars:
+         freed = state["ledger"].compact()
+         with state["tracer"].span("compaction") as span:
+             span.event("compaction", freed=freed)
+     return state
+ 
+ 
++def _truncate_ledger(rendered: str, budget: int) -> str:
++    """Truncate on whole lines only (never mid-line), keeping as many
++    complete lines as fit in `budget` chars. When lines are dropped, append
++    a final line recording how many, so the writer and any downstream
++    reader know the ledger was cut."""
++    if len(rendered) <= budget:
++        return rendered
++    lines = rendered.split("\n")
++    kept: list[str] = []
++    used = 0
++    for line in lines:
++        added = len(line) + (1 if kept else 0)   # account for the join "\n"
++        if used + added > budget:
++            break
++        used += added
++        kept.append(line)
++    omitted = len(lines) - len(kept)
++    kept.append(f"[{omitted} ledger lines omitted — over context budget]")
++    return "\n".join(kept)
++
++
+ def write_memo(state: dict) -> dict:
+     cfg = state["config"]
+-    section_list = "\n".join(f"{n}. {slug}: {title}"
+-                             for n, slug, title in SECTIONS)
++    if state["question"]:
++        section_list = "1. qa: Question and answer"
++    else:
++        section_list = "\n".join(f"{n}. {slug}: {title}"
++                                 for n, slug, title in SECTIONS)
++    ledger_text = _truncate_ledger(state["ledger"].render(),
++                                   cfg.context_budget_chars)
+     prompt = (
+         "Write the diligence memo as structured output.\n"
+         "Sections (use these slugs/titles, in order):\n" + section_list +
+         "\n\nRULES: cite ONLY identifiers that appear in [brackets] in the "
+         "evidence ledger below, copied verbatim. One assertion per claim. "
+         "A section whose evidence is only status codes gets "
+         "status='status_code' and a status_note. Value-creation ideas go "
+-        "in hypotheses, labeled.\n\nEVIDENCE LEDGER:\n" +
+-        state["ledger"].render()[:cfg.context_budget_chars])
++        "in hypotheses, labeled.\n\nEVIDENCE LEDGER:\n" + ledger_text)
+     memo = state["llm"].parse_structured(
+         system=load_system_prompt(), prompt=prompt, output_model=Memo)
+     state["memo"] = memo.model_copy(update={
+         "cik": state["cik"], "as_of": state["as_of"],
+         "company_name": state["company_name"],
+         "config_version": cfg.config_version,
+         "trace_id": state["tracer"].trace_id,
+         "session_id": state["session_id"]})
+     return state
+ 
+diff --git a/src/edgar/agent/tool_defs.py b/src/edgar/agent/tool_defs.py
+index add20e8..1969bdf 100644
+--- a/src/edgar/agent/tool_defs.py
++++ b/src/edgar/agent/tool_defs.py
+@@ -1,17 +1,18 @@
+ import json
+ from datetime import date, datetime
+ 
+ from edgar.agent.ledger import LedgerEntry
+ from edgar.narrative.store import search_spans
+ from edgar.tools.compute import ComputeError, compute
+-from edgar.tools.facts_tools import get_facts, list_available_facts
++from edgar.tools.facts_tools import (
++    get_fact_history, get_facts, list_available_facts)
+ from edgar.tools.peers import get_peer_set
+ 
+ TOOL_DEFS: list[dict] = [
+     {"name": "get_facts",
+      "description": "Canonical financial facts for one company and period "
+                     "window. Missing fields come back with a status code — "
+                     "cite fact_id values verbatim.",
+      "input_schema": {"type": "object", "properties": {
+          "cik": {"type": "integer"},
+          "fields": {"type": "array", "items": {"type": "string"}},
+@@ -39,20 +40,37 @@ TOOL_DEFS: list[dict] = [
+      "description": "Comparable companies by SIC, with the selection rule.",
+      "input_schema": {"type": "object", "properties": {
+          "cik": {"type": "integer"}, "min_peers": {"type": "integer"}},
+       "required": ["cik"]}},
+     {"name": "list_available_facts",
+      "description": "Coverage map: which fields exist for which periods, "
+                     "with status codes. Consult before claiming absence.",
+      "input_schema": {"type": "object", "properties": {
+          "cik": {"type": "integer"}},
+       "required": ["cik"]}},
++    {"name": "get_fact_history",
++     "description": "Every filed version of ONE figure (same field, same "
++                    "period_start/period_end/period_type/unit), oldest "
++                    "first — the restatement trail. Use this when a figure "
++                    "may have been revised and you need to cite multiple "
++                    "fact_ids for the same number.",
++     "input_schema": {"type": "object", "properties": {
++         "cik": {"type": "integer"},
++         "canonical_field": {"type": "string"},
++         "period_end": {"type": "string", "description": "YYYY-MM-DD"},
++         "period_start": {"type": ["string", "null"],
++                          "description": "YYYY-MM-DD, or null for an "
++                                         "instant fact"},
++         "period_type": {"type": "string"},
++         "unit": {"type": "string"}},
++      "required": ["cik", "canonical_field", "period_end", "period_start",
++                   "period_type", "unit"]}},
+ ]
+ 
+ 
+ def _d(s: str) -> date:
+     return datetime.strptime(s, "%Y-%m-%d").date()
+ 
+ 
+ def dispatch_tool(con, name, args, *, as_of, embedder, retrieval_k):
+     try:
+         if name == "get_facts":
+@@ -91,13 +109,27 @@ def dispatch_tool(con, name, args, *, as_of, embedder, retrieval_k):
+                 f"{ps.selection_rule}", "")]
+         if name == "list_available_facts":
+             rep = list_available_facts(con, int(args["cik"]), as_of)
+             gist = "; ".join(
+                 f"{e.period_end}: " + ",".join(
+                     f"{k}={v}" for k, v in sorted(e.statuses.items())
+                     if v != "AVAILABLE")
+                 for e in rep.entries[:8]) or "all AVAILABLE"
+             return rep.model_dump_json(), [LedgerEntry(
+                 "coverage", "", f"coverage: {gist}", "")]
++        if name == "get_fact_history":
++            pstart = args.get("period_start")
++            facts = get_fact_history(
++                con, int(args["cik"]), args["canonical_field"],
++                _d(args["period_end"]), as_of,
++                period_start=_d(pstart) if pstart else None,
++                period_type=args["period_type"], unit=args["unit"])
++            entries = [LedgerEntry("fact", f.fact_id,
++                                   f"{f.canonical_field} {f.period_end} "
++                                   f"{f.unit} {f.value:g} "
++                                   f"(filed {f.filed_date})", "")
++                       for f in facts]
++            return json.dumps(
++                [f.model_dump(mode="json") for f in facts]), entries
+         return json.dumps({"error": f"unknown tool {name}"}), []
+     except (ComputeError, ValueError, KeyError, TypeError) as exc:
+         return json.dumps({"error": str(exc)}), []
+diff --git a/src/edgar/eval/adversarial.py b/src/edgar/eval/adversarial.py
+index b86784e..3f6422a 100644
+--- a/src/edgar/eval/adversarial.py
++++ b/src/edgar/eval/adversarial.py
+@@ -60,23 +60,22 @@ def main() -> None:
+     con = connect(get_settings().duckdb_path)
+     judge = AnthropicLLM(cfg.judge_model)
+     results = []
+     for case in load_cases():
+         as_of = _date(2023, 12, 31)
+         if "As of " in case.question:      # post_asof cases embed their date
+             frag = case.question.split("As of ", 1)[1][:10]
+             as_of = _date.fromisoformat(frag)
+         memo = run_agent(cik=case.cik, as_of=as_of, question=case.question,
+                          config=cfg)
+-        from pathlib import Path
+-        memo_json = sorted(Path("data/memos").glob(
+-            f"{case.cik}_{as_of}_*.json"))[-1]
++        memo_json = Path("data/memos") / \
++            f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
+         report = evaluate_memo(con, judge, memo_json)
+         verdict = score_answer(memo, report)
+         results.append({"id": case.id, "trap": case.trap,
+                         "verdict": verdict})
+         print(f"{case.id} [{case.trap}] -> {verdict}")
+     n = len(results)
+     refused = sum(1 for r in results if r["verdict"] == "REFUSED")
+     fabricated = sum(1 for r in results if r["verdict"] == "FABRICATED")
+     summary = {"cases": results, "refusal_rate": refused / n,
+                "fabrication_rate": fabricated / n}
+diff --git a/src/edgar/eval/judges.py b/src/edgar/eval/judges.py
+index 785fc39..9c4134a 100644
+--- a/src/edgar/eval/judges.py
++++ b/src/edgar/eval/judges.py
+@@ -1,17 +1,17 @@
+ import json
+ from datetime import date
+ 
+-from edgar.agent.guardrails import _visible
+ from edgar.agent.llm import LLMClient
+ from edgar.eval.schemas import JudgeOpinion, RawClaim, Verdict
+ from edgar.tools.compute import ComputeError, recompute
++from edgar.tools.visibility import visible_asof
+ 
+ _SCALES = (1.0, 1e3, 1e6, 1e9)
+ _JUDGE_SYSTEM = ("You judge whether evidence supports a claim. "
+                  "Answer with status SUPPORTED, PARTIALLY_SUPPORTED, "
+                  "UNSUPPORTED, or CONTRADICTED, and a one-sentence reason. "
+                  "Be strict: the evidence must actually say it.")
+ 
+ 
+ def _match(claimed: float | None, actual: float, tol: float) -> bool:
+     if claimed is None:
+@@ -105,21 +105,21 @@ def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
+ 
+ def temporal_leakage(con, claims: list[RawClaim], as_of: date,
+                      session_id: str | None = None) -> list[str]:
+     problems: list[str] = []
+     seen: set[str] = set()
+     for claim in claims:
+         for cid in claim.citations:
+             if cid in seen:
+                 continue
+             seen.add(cid)
+-            problem = _visible(con, cid, as_of)
++            problem = visible_asof(con, cid, as_of)
+             if problem is not None and "unknown" not in problem:
+                 problems.append(problem)
+     if session_id:
+         row = con.execute("SELECT recalled_conclusion_ids FROM session "
+                           "WHERE session_id = ?", [session_id]).fetchone()
+         for cid in json.loads(row[0]) if row and row[0] else []:
+             r = con.execute("SELECT learned_as_of FROM session_conclusion "
+                             "WHERE conclusion_id = ?", [cid]).fetchone()
+             if r and r[0] > as_of:
+                 problems.append(f"recalled conclusion {cid} learned "
+diff --git a/src/edgar/tools/facts_tools.py b/src/edgar/tools/facts_tools.py
+index 8ee9dcb..9ebf6d5 100644
+--- a/src/edgar/tools/facts_tools.py
++++ b/src/edgar/tools/facts_tools.py
+@@ -1,16 +1,16 @@
+ from datetime import date
+ 
+ import duckdb
+ 
+ from edgar.curate.mapping import CANONICAL_FIELDS
+-from edgar.query.asof import get_facts_asof
++from edgar.query.asof import get_facts_asof, restatement_history
+ from edgar.query.coverage import coverage_map
+ from edgar.tools.schemas import (
+     CoverageEntry, CoverageReport, FactDTO, GetFactsResult, MissingField)
+ 
+ 
+ def _validate_fields(fields: list[str]) -> None:
+     unknown = [f for f in fields if f not in CANONICAL_FIELDS]
+     if unknown:
+         raise ValueError(f"unknown canonical field(s): {unknown}; "
+                          f"valid: {list(CANONICAL_FIELDS)}")
+@@ -46,20 +46,44 @@ def get_facts(con: duckdb.DuckDBPyConnection, cik: int, fields: list[str],
+         if ref is None:
+             missing = [MissingField(canonical_field=f, status="NOT_DISCLOSED")
+                        for f in missing_fields]
+         else:
+             statuses = coverage_map(con, cik, ref, as_of)
+             missing = [MissingField(canonical_field=f, status=str(statuses[f]))
+                        for f in missing_fields]
+     return GetFactsResult(facts=facts, missing=missing)
+ 
+ 
++def get_fact_history(con: duckdb.DuckDBPyConnection, cik: int, field: str,
++                     period_end: date, as_of: date, *,
++                     period_start: date | None, period_type: str,
++                     unit: str) -> list[FactDTO]:
++    """Every filed version of one figure (spec §10's restatement trail),
++    capped to what was knowable on `as_of`.
++
++    `restatement_history` returns every version regardless of when it was
++    filed — the point-in-time cap is applied HERE, not there, so this is
++    the only place a caller can accidentally see a future-filed version.
++    """
++    _validate_fields([field])
++    rows = restatement_history(con, cik, field, period_end,
++                               period_start=period_start,
++                               period_type=period_type, unit=unit)
++    return [FactDTO(fact_id=a.fact_id, cik=a.cik,
++                    canonical_field=a.canonical_field, value=a.value,
++                    unit=a.unit, period_type=a.period_type,
++                    period_start=a.period_start, period_end=a.period_end,
++                    filed_date=a.filed_date, accession=a.accession,
++                    source_tag=a.source_tag)
++            for a in rows if a.filed_date <= as_of]
++
++
+ def list_available_facts(con: duckdb.DuckDBPyConnection, cik: int,
+                          as_of: date,
+                          max_periods: int = 24) -> CoverageReport:
+     """Spec §6: the coverage map that makes refusal reachable."""
+     period_ends = [r[0] for r in con.execute(
+         "SELECT DISTINCT period_end FROM fact WHERE cik = ? "
+         "AND filed_date <= ? ORDER BY period_end DESC LIMIT ?",
+         [cik, as_of, max_periods]).fetchall()]
+     entries = [CoverageEntry(
+                    period_end=pe,
+diff --git a/src/edgar/tools/visibility.py b/src/edgar/tools/visibility.py
+new file mode 100644
+index 0000000..df628fc
+--- /dev/null
++++ b/src/edgar/tools/visibility.py
+@@ -0,0 +1,65 @@
++"""Point-in-time visibility, split from derivation-integrity checking.
++
++Two independent questions get conflated if answered by one function:
++
++  1. Was this identifier knowable on `as_of`? (a date comparison only)
++  2. Does this derivation still recompute to its stored value? (an
++     integrity check that has nothing to do with time travel)
++
++`visible_asof` answers only the first, by design: it is the function the
++eval's `temporal_leakage` gate uses, and that gate must stay a pure
++point-in-time signal — a broken derivation is a correctness bug, not a
++leak. `check_integrity` answers only the second, and is None for fact/span
++ids (they have no recompute step) and for unknown derivation ids (nothing
++to recompute).
++"""
++from datetime import date
++
++import duckdb
++
++from edgar.tools.compute import ComputeError, recompute
++
++
++def visible_asof(con: duckdb.DuckDBPyConnection, cid: str,
++                 as_of: date) -> str | None:
++    """Return None when `cid` was knowable on `as_of`, else a human-
++    readable problem. Date comparison only — fact/span `filed_date`,
++    derivation `as_of` column. Never recomputes."""
++    if cid.startswith("D-"):
++        row = con.execute(
++            "SELECT as_of FROM derivation WHERE derivation_id = ?",
++            [cid]).fetchone()
++        if row is None:
++            return f"unknown derivation {cid}"
++        return None if row[0] <= as_of else \
++            f"derivation {cid} computed for later as_of {row[0]}"
++    for table, col in (("fact", "fact_id"), ("span", "span_id")):
++        row = con.execute(
++            f"SELECT filed_date FROM {table} WHERE {col} = ?",
++            [cid]).fetchone()
++        if row is not None:
++            return None if row[0] <= as_of else \
++                f"{table} {cid} filed {row[0]} after as_of {as_of}"
++    return f"unknown identifier {cid}"
++
++
++def check_integrity(con: duckdb.DuckDBPyConnection,
++                    cid: str) -> str | None:
++    """Derivation-recompute check only. Always None for fact/span ids and
++    for an unknown derivation id (that is `visible_asof`'s problem to
++    report, not this function's)."""
++    if not cid.startswith("D-"):
++        return None
++    row = con.execute(
++        "SELECT value FROM derivation WHERE derivation_id = ?",
++        [cid]).fetchone()
++    if row is None:
++        return None
++    try:
++        again = recompute(con, cid)
++    except ComputeError as exc:
++        return f"derivation {cid} does not recompute: {exc}"
++    if abs(again.value - row[0]) > 1e-9 * max(1.0, abs(row[0])):
++        return (f"derivation {cid} stored {row[0]} but recomputes "
++                f"to {again.value}")
++    return None
+diff --git a/tests/test_adversarial.py b/tests/test_adversarial.py
+index 2698257..53f6d0a 100644
+--- a/tests/test_adversarial.py
++++ b/tests/test_adversarial.py
+@@ -1,17 +1,22 @@
+ from datetime import date
++from pathlib import Path
+ 
+ from edgar.config import Settings
++from edgar.agent import nodes
+ from edgar.agent.memo import Claim, Memo, MemoSection
++from edgar.db import connect
+ from edgar.eval.adversarial import load_cases, score_answer
+ from edgar.eval.metrics import compute_metrics
+ from edgar.eval.schemas import RawClaim, Verdict
++from edgar.memory.episodic import create_memory_tables
++from edgar.ops.tracing import RecordingTracer
+ 
+ _META = {"memo_path": "m", "config_version": "v", "session_id": "S",
+          "as_of": "2023-12-31", "guardrail_rejections": 0}
+ 
+ 
+ def test_thirty_unique_cases_over_narrative_ciks():
+     cases = load_cases()
+     assert len(cases) == 30
+     assert len({c.id for c in cases}) == 30
+     valid = set(Settings(_env_file=None).narrative_ciks)
+@@ -37,10 +42,34 @@ def test_refusal_grounded_fabricated():
+                                                 citations=["f"])])])
+     good = compute_metrics(
+         [Verdict(claim=RawClaim(claim_text="x", claim_type="NUMERIC",
+                                 citations=["f"]),
+                  status="SUPPORTED", reason="r")], [], memo_meta=_META)
+     assert score_answer(answered, good) == "GROUNDED"
+     bad = compute_metrics(
+         [Verdict(claim=RawClaim(claim_text="x", claim_type="UNSUPPORTED"),
+                  status="UNSUPPORTED", reason="r")], [], memo_meta=_META)
+     assert score_answer(answered, bad) == "FABRICATED"
++
++
++def test_memo_json_path_matches_what_emit_writes(tmp_path):
++    """C1: adversarial.main() no longer globs data/memos for the memo it
++    just wrote (that glob also matches the eval's own *.report.json /
++    *.verdicts.json siblings). It reconstructs the exact stem emit() uses.
++    This test locks the naming contract between the two modules."""
++    con = connect(tmp_path / "t.duckdb")
++    create_memory_tables(con)
++    memo = Memo(cik=320193, company_name="Apple Inc.",
++                as_of=date(2023, 12, 31), sections=[],
++                config_version="v1+deadbeef", trace_id="tr",
++                session_id="S1")
++    out_dir = tmp_path / "memos"
++    state = {"memo": memo, "con": con, "out_dir": out_dir,
++             "guardrail_report": None, "usage": {"in": 0, "out": 0},
++             "question": None, "recalled_ids": [],
++             "tracer": RecordingTracer()}
++    nodes.emit(state)
++
++    # exactly the construction adversarial.main() now uses
++    memo_json = out_dir / f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
++    assert memo_json.exists()
++    assert memo_json == Path(out_dir) / "320193_2023-12-31_v1+deadbeef.json"
+diff --git a/tests/test_agent_nodes.py b/tests/test_agent_nodes.py
+index 92d20b9..2764518 100644
+--- a/tests/test_agent_nodes.py
++++ b/tests/test_agent_nodes.py
+@@ -2,21 +2,21 @@ from datetime import date
+ 
+ from edgar.db import connect, init_schema
+ from edgar.curate.facts import create_fact_table
+ from edgar.curate.mapping import create_mapping_table
+ from edgar.narrative.store import create_narrative_tables
+ from edgar.memory.episodic import (
+     create_memory_tables, record_conclusions, save_session)
+ from edgar.tools.compute import create_derivation_table
+ from edgar.agent import nodes
+ from edgar.agent.agent_config import load_agent_config
+-from edgar.agent.ledger import EvidenceLedger
++from edgar.agent.ledger import EvidenceLedger, LedgerEntry
+ from edgar.agent.llm import FakeLLM, LLMTurn, ToolCall
+ from edgar.agent.memo import Claim, Memo, MemoSection
+ from edgar.agent.tool_defs import TOOL_DEFS, dispatch_tool
+ from edgar.narrative.embedder import FakeEmbedder
+ from edgar.ops.tracing import RecordingTracer
+ 
+ 
+ def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
+           ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
+           filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
+@@ -123,20 +123,83 @@ def test_write_then_guardrail_then_repair_loop(tmp_path):
+     llm = FakeLLM(parsed=[bad])
+     st = _state(con, llm=llm)
+     st["session_id"] = "S-test"
+     st = nodes.write_memo(st)
+     st = nodes.guardrail_node(st)
+     assert st["guardrail_report"].rejection_count == 1
+     st = nodes.repair_node(st)
+     assert st["memo"].sections[0].claims[0].is_hypothesis
+ 
+ 
++def test_write_memo_truncates_ledger_on_whole_lines(tmp_path):
++    con = _con(tmp_path)
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++               sections=[])
++    llm = FakeLLM(parsed=[memo])
++    st = _state(con, llm=llm)
++    st["session_id"] = "S-test"
++    for i in range(10):
++        st["ledger"].append(LedgerEntry(
++            "fact", f"f{i:04d}", "revenue grew strongly this quarter",
++            "growth"))
++    full = st["ledger"].render()
++    first_line = full.split("\n")[0]
++    # room for exactly the first whole line, nothing more
++    st["config"] = st["config"].model_copy(update={
++        "context_budget_chars": len(first_line) + 5})
++
++    st = nodes.write_memo(st)
++
++    prompt = llm.parse_calls[0]["prompt"]
++    assert first_line in prompt          # kept line is complete, unmangled
++    assert "[f0001]" not in prompt        # everything past it was dropped
++    assert "9 ledger lines omitted — over context budget" in prompt
++    # no partial identifier: nothing that looks like a cut-off "[f000" or
++    # a fragment of the gist text should appear
++    assert "[f000" not in prompt.replace(first_line, "").replace(
++        "9 ledger lines omitted — over context budget", "")
++
++
++def test_write_memo_qa_mode_single_section(tmp_path):
++    con = _con(tmp_path)
++    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
++               sections=[MemoSection(slug="qa", title="Question and answer",
++                                     status="status_code",
++                                     status_note="NOT_DISCLOSED")])
++    llm = FakeLLM(parsed=[memo])
++    st = _state(con, llm=llm, question="What was revenue?")
++    st["session_id"] = "S-test"
++
++    st = nodes.write_memo(st)
++
++    prompt = llm.parse_calls[0]["prompt"]
++    assert "qa" in prompt
++    assert "working_capital" not in prompt
++
++
++def test_dispatch_get_fact_history_filters_and_builds_ledger(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fOld", value=90.0, filed=date(2023, 5, 1),
++          accn="a-1")
++    _fact(con, fact_id="fNew", value=95.0, filed=date(2023, 8, 1),
++          accn="a-2")   # filed after as_of below — must not appear
++    payload, entries = dispatch_tool(
++        con, "get_fact_history",
++        {"cik": 1, "canonical_field": "revenue", "period_end": "2023-03-31",
++         "period_start": "2023-01-01", "period_type": "duration",
++         "unit": "USD"},
++        as_of=date(2023, 6, 1), embedder=FakeEmbedder(), retrieval_k=4)
++    assert "fOld" in payload and "fNew" not in payload
++    assert [e.identifier for e in entries] == ["fOld"]
++    assert all(e.kind == "fact" for e in entries)
++
++
+ def test_emit_persists_session_and_dated_conclusions(tmp_path):
+     con = _con(tmp_path)
+     memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                 sections=[MemoSection(slug="growth", title="Growth",
+                                       claims=[Claim(text="Revenue was 100",
+                                                     citations=["fA"])])],
+                 config_version="v1+deadbeef", trace_id="tr",
+                 session_id="S1")
+     st = _state(con, memo=memo)
+     st["out_dir"] = tmp_path / "memos"
+diff --git a/tests/test_facts_tools.py b/tests/test_facts_tools.py
+index ac7489c..0073592 100644
+--- a/tests/test_facts_tools.py
++++ b/tests/test_facts_tools.py
+@@ -1,18 +1,19 @@
+ from datetime import date
+ 
+ import pytest
+ 
+ from edgar.db import connect, init_schema
+ from edgar.curate.facts import create_fact_table
+ from edgar.curate.mapping import create_mapping_table
+-from edgar.tools.facts_tools import get_facts, list_available_facts
++from edgar.tools.facts_tools import (
++    get_fact_history, get_facts, list_available_facts)
+ 
+ 
+ def _db(tmp_path):
+     con = connect(tmp_path / "t.duckdb")
+     init_schema(con)
+     create_fact_table(con)
+     create_mapping_table(con)
+     return con
+ 
+ 
+@@ -53,10 +54,32 @@ def test_list_available_facts_orders_new_to_old_and_respects_as_of(tmp_path):
+     assert [e.period_end for e in rep.entries] == [date(2023, 3, 31)]
+     assert rep.entries[0].statuses["revenue"] == "AVAILABLE"
+     assert rep.entries[0].statuses["inventory"] == "NOT_DISCLOSED"
+ 
+ 
+ def test_get_facts_rejects_unknown_field(tmp_path):
+     con = _db(tmp_path)
+     with pytest.raises(ValueError, match="unknown canonical field"):
+         get_facts(con, 1, ["ebitda"], date(2023, 1, 1), date(2023, 3, 31),
+                   as_of=date(2023, 6, 1))
++
++
++def test_get_fact_history_caps_to_as_of(tmp_path):
++    """I3: restatement_history returns every version regardless of when
++    it was filed; get_fact_history is the tool surface and MUST apply the
++    point-in-time cap itself."""
++    con = _db(tmp_path)
++    _fact(con, fact_id="fOld", value=90.0, filed=date(2023, 5, 1),
++          accn="a-1")
++    _fact(con, fact_id="fNew", value=95.0, filed=date(2023, 8, 1),
++          accn="a-2")
++    hist = get_fact_history(con, 1, "revenue", date(2023, 3, 31),
++                            date(2023, 6, 1),
++                            period_start=date(2023, 1, 1),
++                            period_type="duration", unit="USD")
++    assert [f.fact_id for f in hist] == ["fOld"]
++
++    hist_full = get_fact_history(con, 1, "revenue", date(2023, 3, 31),
++                                 date(2023, 12, 31),
++                                 period_start=date(2023, 1, 1),
++                                 period_type="duration", unit="USD")
++    assert [f.fact_id for f in hist_full] == ["fOld", "fNew"]
+diff --git a/tests/test_guardrails.py b/tests/test_guardrails.py
+index 23c8d65..30e0ebc 100644
+--- a/tests/test_guardrails.py
++++ b/tests/test_guardrails.py
+@@ -30,20 +30,27 @@ def _memo(claims, hypotheses=()):
+     return Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                 sections=[MemoSection(slug="growth", title="Growth",
+                                       claims=list(claims))],
+                 hypotheses=list(hypotheses))
+ 
+ 
+ def test_numeric_claim_detector():
+     assert _is_numeric_claim("Revenue was $2.1B")
+     assert _is_numeric_claim("margin fell 240 bps")
+     assert not _is_numeric_claim("Management discussed freight costs")
++    # I2: bare years and ISO dates must not fire the detector on their own
++    assert not _is_numeric_claim("Filed on 2023-05-01")
++    assert not _is_numeric_claim("Fiscal 2023 results")
++    assert not _is_numeric_claim("Management cited freight costs in 2023")
++    # ... but real money/percent and large non-year numbers still do
++    assert _is_numeric_claim("Revenue was $2.1B")
++    assert _is_numeric_claim("headcount of 154000")
+ 
+ 
+ def test_uncited_numeric_claim_is_violation_and_repair_downgrades(tmp_path):
+     con = _con(tmp_path)
+     memo = _memo([Claim(text="Revenue was 100")])
+     rep = check_memo(con, memo, date(2023, 6, 1))
+     assert rep.rejection_count == 1
+     assert rep.violations[0].rule == "needs_citation"
+     fixed = repair_memo(memo, rep)
+     c = fixed.sections[0].claims[0]
+@@ -78,10 +85,26 @@ def test_derivation_recompute_checked(tmp_path):
+     assert check_memo(con, good, date(2023, 6, 1)).violations[0].rule == \
+         "derivation_recomputes"
+ 
+ 
+ def test_labeled_hypotheses_exempt_from_citation_rule(tmp_path):
+     con = _con(tmp_path)
+     memo = _memo([], hypotheses=[Claim(text="Margins sit 800 bps below "
+                                             "peers",
+                                        is_hypothesis=True)])
+     assert check_memo(con, memo, date(2023, 6, 1)).rejection_count == 0
++
++
++def test_repair_downgrades_hypothesis_citing_ghost_id(tmp_path):
++    con = _con(tmp_path)
++    memo = _memo([], hypotheses=[Claim(text="Margins sit 800 bps below "
++                                            "peers",
++                                       citations=["ghost"],
++                                       is_hypothesis=True)])
++    rep = check_memo(con, memo, date(2023, 6, 1))
++    assert rep.rejection_count == 1
++    assert rep.violations[0].section == "hypotheses"
++    fixed = repair_memo(memo, rep)
++    h = fixed.hypotheses[0]
++    assert h.citations == []
++    assert h.text.startswith("[UNVERIFIED")
++    assert h.is_hypothesis is True   # already a hypothesis, not re-flagged
+diff --git a/tests/test_judges.py b/tests/test_judges.py
+index 9529f49..3f84f27 100644
+--- a/tests/test_judges.py
++++ b/tests/test_judges.py
+@@ -88,10 +88,30 @@ def test_temporal_leakage_both_surfaces(tmp_path):
+                  recalled_conclusion_ids=["C-x"])
+     con.execute("INSERT INTO session_conclusion VALUES "
+                 "('C-x','s0',1,'future conclusion',DATE '2025-01-01','t')")
+     claims = [RawClaim(claim_text="x", claim_type="NUMERIC",
+                        citations=["fLate"], claimed_value=1.0)]
+     problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1),
+                                 session_id="S1")
+     assert len(problems) == 2
+     assert any("fLate" in p for p in problems)
+     assert any("C-x" in p for p in problems)
++
++
++def test_temporal_leakage_excludes_derivation_integrity_failures(tmp_path):
++    """I4/visibility split: a derivation whose stored value was tampered
++    with is a guardrail (integrity) violation, not a temporal leak — the
++    MUST-be-zero gate must not be contaminated by it. See
++    test_guardrails.test_derivation_recompute_checked for the guardrail
++    side of this same tamper."""
++    con = _con(tmp_path)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
++               date(2023, 6, 1))
++    con.execute("UPDATE derivation SET value = 0.9 WHERE derivation_id = ?",
++               [d.derivation_id])
++    claims = [RawClaim(claim_text="Gross margin was 40%",
++                       claim_type="DERIVED", citations=[d.derivation_id],
++                       claimed_value=0.40)]
++    problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1))
++    assert problems == []
+diff --git a/tests/test_visibility.py b/tests/test_visibility.py
+new file mode 100644
+index 0000000..ebc4711
+--- /dev/null
++++ b/tests/test_visibility.py
+@@ -0,0 +1,66 @@
++from datetime import date
++
++from edgar.db import connect
++from edgar.curate.facts import create_fact_table
++from edgar.narrative.store import create_narrative_tables
++from edgar.tools.compute import compute, create_derivation_table
++from edgar.tools.visibility import check_integrity, visible_asof
++
++
++def _fact(con, *, fact_id, cik=1, field="revenue", value=100.0, unit="USD",
++          ptype="duration", pstart=date(2023, 1, 1), pend=date(2023, 3, 31),
++          filed=date(2023, 5, 1), accn="a-1", tag="Revenues", rule="MR-0003"):
++    con.execute(
++        "INSERT INTO fact VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
++        [fact_id, cik, field, value, unit, ptype, pstart, pend,
++         "2023", "Q1", filed, accn, tag, rule, 1.0, "2023q2"],
++    )
++
++
++def _con(tmp_path):
++    con = connect(tmp_path / "t.duckdb")
++    create_fact_table(con)
++    create_derivation_table(con)
++    create_narrative_tables(con)
++    return con
++
++
++def test_visible_asof_fact_span_and_unknown(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="fA", filed=date(2023, 5, 1))
++    con.execute("INSERT INTO span VALUES ('sB','d1',1,'a-1','10-K',"
++               "'Item 7',DATE '2023-05-01',0,40,'text',NULL)")
++    assert visible_asof(con, "fA", date(2023, 6, 1)) is None
++    assert "after as_of" in visible_asof(con, "fA", date(2023, 1, 1))
++    assert visible_asof(con, "sB", date(2023, 6, 1)) is None
++    assert "unknown identifier" in visible_asof(con, "nope", date(2023, 6, 1))
++
++
++def test_visible_asof_derivation_is_date_only_no_recompute(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
++               date(2023, 6, 1))
++    assert visible_asof(con, d.derivation_id, date(2023, 6, 1)) is None
++    assert "unknown derivation" in visible_asof(con, "D-nope",
++                                                date(2023, 6, 1))
++    # tamper the stored value: visible_asof must NOT notice (date only)
++    con.execute("UPDATE derivation SET value = 0.9 WHERE derivation_id = ?",
++               [d.derivation_id])
++    assert visible_asof(con, d.derivation_id, date(2023, 6, 1)) is None
++
++
++def test_check_integrity_derivation_only(tmp_path):
++    con = _con(tmp_path)
++    _fact(con, fact_id="gp", field="gross_profit", value=40.0)
++    _fact(con, fact_id="rev", field="revenue", value=100.0)
++    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
++               date(2023, 6, 1))
++    assert check_integrity(con, d.derivation_id) is None
++    assert check_integrity(con, "fA") is None       # not a derivation id
++    assert check_integrity(con, "D-nope") is None   # nothing to recompute
++    con.execute("UPDATE derivation SET value = 0.9 WHERE derivation_id = ?",
++               [d.derivation_id])
++    problem = check_integrity(con, d.derivation_id)
++    assert problem is not None and "recomputes" in problem
