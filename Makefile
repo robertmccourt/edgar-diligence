@@ -27,3 +27,6 @@ langfuse-up:
 	cd ../langfuse && docker compose up -d
 	@echo "Langfuse at http://localhost:3000 — create an org/project, then put"
 	@echo "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST=http://localhost:3000 in .env"
+
+memo:
+	venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
