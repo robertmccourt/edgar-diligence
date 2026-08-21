@@ -21,3 +21,9 @@ narrative:
 
 index:
 	venv/bin/python -c "from edgar.db import connect; from edgar.config import get_settings; from edgar.narrative.store import index_spans; from edgar.narrative.embedder import SentenceTransformerEmbedder; print(index_spans(connect(get_settings().duckdb_path), SentenceTransformerEmbedder()), 'spans indexed')"
+
+langfuse-up:
+	@test -d ../langfuse || git clone https://github.com/langfuse/langfuse.git ../langfuse
+	cd ../langfuse && docker compose up -d
+	@echo "Langfuse at http://localhost:3000 — create an org/project, then put"
+	@echo "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST=http://localhost:3000 in .env"
