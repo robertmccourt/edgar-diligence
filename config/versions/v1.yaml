@@ -1,0 +1,8 @@
+generation_model: claude-opus-5
+judge_model: claude-sonnet-5
+retrieval_k: 8
+max_tool_turns: 12          # per section; hard stop on the retrieve loop
+max_repair_rounds: 2        # guardrail repair attempts before downgrade-all
+context_budget_chars: 60000 # ledger render budget fed to the memo writer
+compaction_threshold_chars: 45000
+recall_limit: 5             # episodic conclusions loaded per run
