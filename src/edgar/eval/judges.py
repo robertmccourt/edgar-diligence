@@ -7,7 +7,6 @@ from edgar.eval.schemas import JudgeOpinion, RawClaim, Verdict
 from edgar.tools.compute import ComputeError, recompute
 from edgar.tools.visibility import visible_asof
 
-_SCALES = (1.0, 1e3, 1e6, 1e9)
 _JUDGE_SYSTEM = ("You judge whether evidence supports a claim. "
                  "Answer with status SUPPORTED, PARTIALLY_SUPPORTED, "
                  "UNSUPPORTED, or CONTRADICTED, and a one-sentence reason. "
@@ -44,12 +43,16 @@ def _period_mismatch(text: str, period_type: str,
 
 
 def _match(claimed: float | None, actual: float, tol: float) -> bool:
+    """Direct comparison at a bounded tolerance. Extraction normalises a
+    claim's value to base units using the claim's own wording (spec §8.0),
+    so the scorer no longer guesses at scale. The blind trial this
+    replaces — every power of ten, plus x100/x10000 — passed a 3.1-point
+    margin change as a 30.7% margin level (pilot claim 14). The one
+    remaining allowance is a sign flip: losses are quoted positive."""
     if claimed is None:
         return False
-    return any(abs(claimed * s - actual) <= tol * max(1.0, abs(actual))
-               for s in _SCALES) or \
-        any(abs(claimed * s + actual) <= tol * max(1.0, abs(actual))
-            for s in _SCALES)   # sign conventions: |loss| quoted positive
+    room = tol * max(abs(actual), 1e-9)
+    return abs(claimed - actual) <= room or abs(claimed + actual) <= room
 
 
 def _first_of(con, claim: RawClaim, table: str, col: str, cols: str):
@@ -71,14 +74,49 @@ def _judge_derived(con, claim: RawClaim, tolerance: float) -> Verdict:
     except ComputeError as exc:
         return Verdict(claim=claim, status="CONTRADICTED",
                        reason=f"derivation fails to recompute: {exc}")
-    ok = _match(claim.claimed_value, comp.value, tolerance) or \
-        _match(claim.claimed_value, comp.value * 100, tolerance) or \
-        _match(claim.claimed_value, comp.value * 10_000, tolerance)
-    # x100 / x10000: percent and bps phrasings of the same ratio
+    ok = _match(claim.claimed_value, comp.value, tolerance)
     return Verdict(claim=claim,
                    status="SUPPORTED" if ok else "CONTRADICTED",
                    reason=f"derivation {cid} = {comp.value:g} vs "
                           f"claimed {claim.claimed_value}")
+
+
+def _resolve_level(con, cid: str) -> float | None:
+    """The value behind a cited level id — a stored fact, or a derivation
+    replayed from its inputs."""
+    if cid.startswith("D-"):
+        try:
+            return recompute(con, cid).value
+        except ComputeError:
+            return None
+    row = con.execute("SELECT value FROM fact WHERE fact_id = ?",
+                      [cid]).fetchone()
+    return row[0] if row else None
+
+
+def _judge_comparative(con, claim: RawClaim, tolerance: float) -> Verdict:
+    """A change described from its endpoints. The memo cites the levels and
+    states the numbers; there is no computed quantity, so demanding a
+    derivation_id is a scorer defect (spec §8.1, rev 3c). Every cited level
+    must appear among the stated numbers, order-independent."""
+    resolved = {cid: _resolve_level(con, cid) for cid in claim.citations}
+    unresolved = [cid for cid, v in resolved.items() if v is None]
+    if unresolved:
+        return Verdict(claim=claim, status="UNSUPPORTED",
+                       reason=f"citations {unresolved} resolve to no "
+                              "fact or derivation")
+    stated = claim.claimed_values or (
+        [claim.claimed_value] if claim.claimed_value is not None else [])
+    unmatched = [
+        f"{cid}={value:g}" for cid, value in resolved.items()
+        if not any(_match(s, value, tolerance) for s in stated)]
+    if unmatched:
+        return Verdict(claim=claim, status="CONTRADICTED",
+                       reason=f"cited {', '.join(unmatched)} appears among "
+                              f"none of the stated values {stated}")
+    return Verdict(claim=claim, status="SUPPORTED",
+                   reason=f"every cited level matches a stated value "
+                          f"({len(resolved)} endpoints checked)")
 
 
 def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
@@ -114,6 +152,8 @@ def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
                               f"{claim.claimed_value}")
     if t == "DERIVED":
         return _judge_derived(con, claim, tolerance)
+    if t == "COMPARATIVE":
+        return _judge_comparative(con, claim, tolerance)
     if t == "ATTRIBUTED":
         cid, row = _first_of(con, claim, "span", "span_id", "text")
         if row is None:

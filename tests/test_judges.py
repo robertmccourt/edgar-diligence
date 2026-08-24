@@ -29,11 +29,13 @@ def _con(tmp_path):
     return con
 
 
-def test_numeric_supported_scale_aware(tmp_path):
+def test_numeric_supported_at_bounded_tolerance(tmp_path):
+    """$2.1B rounds off $2.11B — within the 2% band once extraction has
+    normalised "billion" into the value (spec 8.0)."""
     con = _con(tmp_path)
     _fact(con, fact_id="fA", value=2_110_000_000.0, filed=date(2023, 5, 1))
     c = RawClaim(claim_text="Revenue was $2.1B", claim_type="NUMERIC",
-                 citations=["fA"], claimed_value=2.1)
+                 citations=["fA"], claimed_value=2.1e9)
     v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
     assert v.status == "SUPPORTED"
 
@@ -42,7 +44,7 @@ def test_numeric_contradicted_when_value_off(tmp_path):
     con = _con(tmp_path)
     _fact(con, fact_id="fA", value=2_110_000_000.0, filed=date(2023, 5, 1))
     c = RawClaim(claim_text="Revenue was $3.4B", claim_type="NUMERIC",
-                 citations=["fA"], claimed_value=3.4)
+                 citations=["fA"], claimed_value=3.4e9)
     assert judge_claim(con, FakeLLM(), c,
                        as_of=date(2023, 6, 1)).status == "CONTRADICTED"
 
@@ -70,7 +72,7 @@ def test_numeric_annual_language_on_annual_fact_supported(tmp_path):
           filed=date(2023, 11, 3))
     c = RawClaim(claim_text="Fiscal year 2023 revenue was $383.3 billion",
                  claim_type="NUMERIC", citations=["fY"],
-                 claimed_value=383.3)
+                 claimed_value=383.3e9)
     assert judge_claim(con, FakeLLM(), c,
                        as_of=date(2023, 12, 1)).status == "SUPPORTED"
 
@@ -82,7 +84,7 @@ def test_numeric_quarter_language_on_annual_fact_contradicted(tmp_path):
           filed=date(2023, 11, 3))
     c = RawClaim(claim_text="Q4 revenue was $383.3 billion",
                  claim_type="NUMERIC", citations=["fY"],
-                 claimed_value=383.3)
+                 claimed_value=383.3e9)
     assert judge_claim(con, FakeLLM(), c,
                        as_of=date(2023, 12, 1)).status == "CONTRADICTED"
 
@@ -96,7 +98,8 @@ def test_numeric_period_check_skips_instant_facts(tmp_path):
           pstart=date(2023, 9, 30), pend=date(2023, 9, 30),
           filed=date(2023, 11, 3))
     c = RawClaim(claim_text="Cash at fiscal year end 2023 was $30.0B",
-                 claim_type="NUMERIC", citations=["fI"], claimed_value=30.0)
+                 claim_type="NUMERIC", citations=["fI"],
+                 claimed_value=30.0e9)
     assert judge_claim(con, FakeLLM(), c,
                        as_of=date(2023, 12, 1)).status == "SUPPORTED"
 
@@ -199,6 +202,63 @@ def test_numeric_claim_citing_derivation_judged_as_derived(tmp_path):
                 date(2023, 6, 1))
     c = RawClaim(claim_text="Gross margin was 45.9%.",
                  claim_type="NUMERIC", citations=[d.derivation_id],
-                 claimed_value=45.9)
+                 claimed_value=0.459)   # "45.9%" normalised at extraction
     v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
     assert v.status == "SUPPORTED"
+
+
+def test_numeric_tolerance_is_bounded_no_blind_scale_trials(tmp_path):
+    """Pilot claim 14 (2026-08-23): a 3.1-point margin CHANGE (0.031) was
+    marked SUPPORTED against a 30.74% margin LEVEL, because 0.031 x 1000
+    lands within tolerance of 30.74 once every unit scale is tried. Values
+    are normalised at extraction now (spec §8.0), so scoring compares
+    directly and this must contradict."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="oi", field="operating_income", value=30.7424)
+    _fact(con, fact_id="rev", field="revenue", value=100.0)
+    d = compute(con, "oi / rev", {"oi": "oi", "rev": "rev"},
+                date(2023, 6, 1))
+    c = RawClaim(claim_text="Operating margin improved 3.1 points",
+                 claim_type="DERIVED", citations=[d.derivation_id],
+                 claimed_value=0.031)
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 6, 1)).status == "CONTRADICTED"
+
+
+def test_numeric_still_matches_a_sign_flipped_loss(tmp_path):
+    """Losses are routinely quoted positive in prose."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="fLoss", field="net_income", value=-2.5e9)
+    c = RawClaim(claim_text="Net loss was $2.5 billion", claim_type="NUMERIC",
+                 citations=["fLoss"], claimed_value=2.5e9)
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 6, 1)).status == "SUPPORTED"
+
+
+def test_comparative_verifies_both_endpoints(tmp_path):
+    """A change stated from two cited levels needs no derivation_id: each
+    cited value must appear among the numbers the claim states. The old
+    scorer marked these UNSUPPORTED for 'cites no derivation_id' (pilot
+    claims 20 and 27)."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="fPrior", value=394.328e9)
+    _fact(con, fact_id="fNow", value=383.285e9)
+    c = RawClaim(claim_text="Revenue declined from $394.3 billion to "
+                            "$383.3 billion",
+                 claim_type="COMPARATIVE", citations=["fPrior", "fNow"],
+                 claimed_values=[394.3e9, 383.3e9])
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 6, 1)).status == "SUPPORTED"
+
+
+def test_comparative_contradicted_when_an_endpoint_is_wrong(tmp_path):
+    con = _con(tmp_path)
+    _fact(con, fact_id="fPrior", value=394.328e9)
+    _fact(con, fact_id="fNow", value=383.285e9)
+    c = RawClaim(claim_text="Revenue declined from $394.3 billion to "
+                            "$340.0 billion",
+                 claim_type="COMPARATIVE", citations=["fPrior", "fNow"],
+                 claimed_values=[394.3e9, 340.0e9])
+    v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
+    assert v.status == "CONTRADICTED"
+    assert "fNow" in v.reason

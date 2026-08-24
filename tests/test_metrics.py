@@ -41,3 +41,35 @@ def test_markdown_report_carries_the_headline_numbers():
 def test_empty_memo_does_not_divide_by_zero():
     r = compute_metrics([], [], memo_meta=_META)
     assert r.n_claims == 0 and r.unsupported_rate == 0.0
+
+
+def test_hypotheses_excluded_from_unsupported_denominator():
+    """Spec 7.7 requires speculation to be stated under the hypotheses
+    heading without citations; the first paid eval then counted all three
+    as unsupported claims, penalising the memo for obeying the spec
+    (rev 3c). They are reported separately instead."""
+    verdicts = [
+        Verdict(claim=RawClaim(claim_text="Revenue was $1B",
+                               claim_type="NUMERIC", citations=["f1"],
+                               claimed_value=1e9),
+                status="SUPPORTED", reason="ok"),
+        Verdict(claim=RawClaim(claim_text="Buybacks could rise",
+                               claim_type="INFERENTIAL", is_hypothesis=True),
+                status="UNSUPPORTED", reason="no citation attached"),
+        Verdict(claim=RawClaim(claim_text="Margins could expand",
+                               claim_type="INFERENTIAL", is_hypothesis=True),
+                status="UNSUPPORTED", reason="no citation attached"),
+    ]
+    r = compute_metrics(verdicts, [], memo_meta=_META)
+    assert r.n_claims == 1
+    assert r.n_hypotheses == 2
+    assert r.unsupported_rate == 0.0
+    assert r.citation_coverage == 1.0
+
+
+def test_narrative_gaps_reported():
+    r = compute_metrics([], [], memo_meta=_META,
+                        narrative_gaps=["Profitability: narrative states "
+                                        "25.6% but no cited bullet"])
+    assert r.narrative_gap_count == 1
+    assert "25.6%" in to_markdown(r)

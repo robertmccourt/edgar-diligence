@@ -1,7 +1,7 @@
 from pydantic import BaseModel, field_validator
 
-CLAIM_TYPES = ("NUMERIC", "DERIVED", "ATTRIBUTED", "INFERENTIAL",
-               "UNSUPPORTED")
+CLAIM_TYPES = ("NUMERIC", "DERIVED", "COMPARATIVE", "ATTRIBUTED",
+               "INFERENTIAL", "UNSUPPORTED")
 VERDICT_STATUSES = ("SUPPORTED", "PARTIALLY_SUPPORTED", "UNSUPPORTED",
                     "CONTRADICTED")
 
@@ -11,6 +11,11 @@ class RawClaim(BaseModel):
     claim_type: str
     citations: list[str] = []
     claimed_value: float | None = None
+    # rev 3c: values are normalised to base units at extraction time, so
+    # scoring compares directly instead of trying every unit scale.
+    claimed_values: list[float] = []
+    is_hypothesis: bool = False
+    section: str = ""
 
     @field_validator("claim_type")
     @classmethod

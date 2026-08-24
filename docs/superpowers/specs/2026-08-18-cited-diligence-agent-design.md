@@ -603,8 +603,8 @@ Section 10 is unavailable to any system without a bitemporal store. Section 11 i
 ```mermaid
 flowchart TB
     MEMO["Memo + citations"]
-    DEC["Decompose into atomic claims"]
-    TYPE["Assign claim type"]
+    DEC["Parse claims — deterministic<br/>one bullet = one claim"]
+    TYPE["Assign claim type<br/>by cited id kind"]
     N["NUMERIC<br/>value vs fact table<br/>within tolerance"]
     D["DERIVED<br/>recompute from cited fact_ids<br/>inputs AND arithmetic"]
     A["ATTRIBUTED<br/>read cited span<br/>does it say this?"]
@@ -621,19 +621,63 @@ flowchart TB
     HUM --> KAPPA --> MET
 ```
 
+### 8.0 Extraction is deterministic (rev 3c)
+
+The memo is not free prose to be mined — it is a structured artifact this
+system itself emits: one assertion per bullet, citation identifiers in
+`[brackets]`, hypotheses under a labeled heading. Extraction therefore
+parses; it does not infer. No model sees the memo before the claims exist.
+
+- **Claim text and citations** come from the bullet, byte-for-byte. Ids are
+  copied by regex, so a citation can never be dropped, invented, or
+  reattached to the wrong claim.
+- **Type follows the cited id kind**, not a reading of the sentence: a
+  `D-` id ⇒ DERIVED; a fact id + a number ⇒ NUMERIC; a span id ⇒
+  ATTRIBUTED; no citation ⇒ UNSUPPORTED. A claim under the hypotheses
+  heading is INFERENTIAL regardless of what it cites.
+- **Narrative paragraphs** are checked as whole statements against the
+  section's own cited bullets — one judgment per section, not shredded into
+  pseudo-claims. This is where a number appearing in prose but in no bullet
+  is caught.
+- **The LLM judges only where judgment is unavoidable**: ATTRIBUTED (does
+  this span say this?), INFERENTIAL (do the premises support this?), and the
+  per-section narrative check. It receives the full claim and the full
+  evidence, never a fragment.
+
+Rationale, measured. The first paid pilot (2026-08-23, `deepseek+c9f2e908`)
+was scored by three different judge models. One dropped every citation
+(reporting 100% unsupported against a fully cited memo); one returned no
+output at all; the third produced a usable report but with a stochastic
+claim count run to run, five mis-typed claims, and — decisive — two
+structurally identical "margin moved from X% to Y%" claims where one was
+marked CONTRADICTED and the other SUPPORTED, the latter passing only
+because the change (0.031) times 1000 lands within tolerance of the level
+(30.74). Every defect in that eval originated in extraction and scoring;
+none originated in the agent. An eval whose noise exceeds the signal it
+measures cannot calibrate anything, and §8.3's kappa is meaningless on top
+of a decomposer that returns a different claim set each run.
+
 ### 8.1 Claim taxonomy
 
 | Type | Example | Verification |
 |---|---|---|
-| **Numeric** | "Revenue was $2.1B in Q3 FY23" | Value matches `fact` within tolerance; `fact_id` exists |
-| **Derived** | "Gross margin fell 240 bps YoY" | Recompute from cited `fact_id`s — validates inputs *and* arithmetic |
+| **Numeric** | "Revenue was $2.1B in Q3 FY23" | Value matches `fact` within tolerance; `fact_id` exists; period language must match the fact's span (rev 3c) |
+| **Derived** | "Gross margin fell 240 bps YoY" | Recompute from cited `derivation_id` — validates inputs *and* arithmetic. A change stated from two cited *level* facts is a COMPARATIVE, not a derived quantity: both endpoints are verified as NUMERIC and the stated difference is checked against them. Demanding a `derivation_id` the memo was right not to invent is a scorer defect (rev 3c). |
 | **Attributed** | "Management cited freight costs" | Cited span actually supports the attribution |
 | **Inferential** | "This suggests weakening pricing power" | Not true/false. Premises supported? Contradicts record? |
 | **Unsupported** | Any assertion with no citation | Counted. Headline metric. |
 
 ### 8.2 Metrics
 
-- Unsupported-claim rate, overall and by type
+- Unsupported-claim rate, overall and by type. **Labeled hypotheses are
+  excluded from the denominator** (rev 3c): §7.7 requires speculation to be
+  stated under the hypotheses heading without citations, so counting those
+  as unsupported claims penalizes the memo for obeying the spec. They are
+  reported separately as a hypothesis count.
+- **Unit-scale tolerance is bounded** (rev 3c): a claimed value may be
+  rescaled by 10³/10⁶/10⁹ (billions vs. units) or ×100/×10⁴ (percent, bps)
+  only when the claim's own wording carries that unit. Blind trial of every
+  scale passed a 3.1-point margin *change* as a 30.7% margin *level*.
 - Citation precision — does cited evidence actually support the claim
 - Citation coverage — fraction of assertions carrying any citation
 - Contradiction rate — claims conflicting with the fact store
@@ -748,7 +792,7 @@ edgar-diligence/
 │   ├── agent/                    # LangGraph loop, ledger, compaction,  [Stage 2]
 │   │                             #   guardrails
 │   ├── memory/                   # procedural loader, episodic store    [Stage 2]
-│   ├── eval/                     # decompose, judges, metrics,          [Stage 2]
+│   ├── eval/                     # extract, judges, metrics,            [Stage 2]
 │   │                             #   calibration
 │   └── ops/                      # tracing, gate, release               [Stage 2/3]
 ├── tests/
@@ -889,6 +933,27 @@ Langfuse self-hosted: $0. Azure, if chosen in §14: ~$20–30/month.
 ---
 
 ## 16. Revision log
+
+### rev 3c — 2026-08-23 · eval extraction made deterministic
+
+Driven by an audit of the first paid pilot memo (`deepseek+c9f2e908`,
+Apple, 3 sections). The memo was clean — all 22 fact- and
+derivation-backed claims verified, all 5 attributed quotes matched the
+filing text — while the eval reported a 29.2% unsupported rate. Every one
+of those "failures" was a scorer artifact: three labeled hypotheses
+counted as uncited claims, two honest two-endpoint comparatives penalized
+for lacking a `derivation_id`, one false CONTRADICTED and one false
+SUPPORTED on structurally identical margin-change claims. See §8.0 for the
+full rationale and §8.1–8.2 for the rule changes.
+
+Amended: §8 flow diagram, new §8.0, §8.1 Numeric/Derived rows, §8.2
+metrics. Model-judgment surface is now ATTRIBUTED, INFERENTIAL, and the
+per-section narrative check only.
+
+One genuine finding survived the audit and is *not* a scorer bug: a
+figure (prior-year net margin, 25.6%) appeared in a narrative paragraph
+with no cited bullet behind it. §8.0's per-section narrative check exists
+to catch that class.
 
 ### rev 3b — 2026-08-20 · as-built divergences recorded
 

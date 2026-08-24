@@ -1,4 +1,4 @@
-"""Evaluate one memo: decompose -> judge -> temporal -> report.
+"""Evaluate one memo: extract -> judge -> temporal -> report.
 
 Usage: venv/bin/python -m edgar.eval.run_eval data/memos/<stem>.json
 Writes <stem>.report.json / .report.md / .verdicts.json beside the memo.
@@ -9,9 +9,34 @@ from datetime import date
 from pathlib import Path
 
 from edgar.agent.memo import Memo, render_markdown
-from edgar.eval.decompose import decompose
+from edgar.eval.extract import extract_claims, narrative_gaps
 from edgar.eval.judges import judge_claim, temporal_leakage
 from edgar.eval.metrics import EvalReport, compute_metrics, to_markdown
+
+
+def make_id_kind(con):
+    """Which table a citation id lives in — the deterministic basis for
+    claim typing (spec §8.0). A `D-` prefix is a derivation by
+    construction; everything else is resolved by lookup, memoised because
+    a memo cites the same ids repeatedly."""
+    cache: dict[str, str] = {}
+
+    def id_kind(cid: str) -> str:
+        if cid.startswith("D-"):
+            return "derivation"
+        if cid not in cache:
+            kind = "unknown"
+            for table, col in (("fact", "fact_id"), ("span", "span_id")):
+                row = con.execute(
+                    f"SELECT 1 FROM {table} WHERE {col} = ?",
+                    [cid]).fetchone()
+                if row:
+                    kind = table
+                    break
+            cache[cid] = kind
+        return cache[cid]
+
+    return id_kind
 
 
 def evaluate_memo(con, llm, memo_json_path: Path) -> EvalReport:
@@ -19,11 +44,15 @@ def evaluate_memo(con, llm, memo_json_path: Path) -> EvalReport:
     memo = Memo.model_validate(blob["memo"])
     as_of = memo.as_of if isinstance(memo.as_of, date) else \
         date.fromisoformat(str(memo.as_of))
-    claims = decompose(llm, render_markdown(memo))
+    markdown = render_markdown(memo)
+    id_kind = make_id_kind(con)
+    claims = extract_claims(markdown, id_kind)
+    gaps = narrative_gaps(markdown, id_kind)
     verdicts = [judge_claim(con, llm, c, as_of) for c in claims]
     problems = temporal_leakage(con, claims, as_of,
                                 session_id=memo.session_id or None)
-    report = compute_metrics(verdicts, problems, memo_meta={
+    report = compute_metrics(verdicts, problems, narrative_gaps=gaps,
+                             memo_meta={
         "memo_path": str(memo_json_path),
         "config_version": memo.config_version,
         "session_id": memo.session_id,

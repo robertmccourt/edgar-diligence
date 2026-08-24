@@ -9,6 +9,8 @@ class EvalReport(BaseModel):
     session_id: str
     as_of: str
     n_claims: int
+    n_hypotheses: int = 0
+    narrative_gaps: list[str] = []
     by_type: dict[str, int]
     by_status: dict[str, int]
     unsupported_rate: float
@@ -18,10 +20,20 @@ class EvalReport(BaseModel):
     temporal_problems: list[str]
     guardrail_rejections: int
 
+    @property
+    def narrative_gap_count(self) -> int:
+        return len(self.narrative_gaps)
+
 
 def compute_metrics(verdicts: list[Verdict],
                     temporal_problems: list[str], *,
-                    memo_meta: dict) -> EvalReport:
+                    memo_meta: dict,
+                    narrative_gaps: list[str] | None = None) -> EvalReport:
+    # Labeled hypotheses are excluded from every rate (spec §8.2, rev 3c):
+    # §7.7 *requires* them to be uncited, so scoring them as unsupported
+    # claims penalizes the memo for obeying the spec.
+    hypotheses = [v for v in verdicts if v.claim.is_hypothesis]
+    verdicts = [v for v in verdicts if not v.claim.is_hypothesis]
     n = len(verdicts)
     by_type: dict[str, int] = {}
     by_status: dict[str, int] = {}
@@ -37,6 +49,8 @@ def compute_metrics(verdicts: list[Verdict],
         session_id=memo_meta["session_id"],
         as_of=memo_meta["as_of"],
         n_claims=n,
+        n_hypotheses=len(hypotheses),
+        narrative_gaps=narrative_gaps or [],
         by_type=by_type,
         by_status=by_status,
         unsupported_rate=unsupported / n if n else 0.0,
@@ -56,10 +70,14 @@ def to_markdown(report: EvalReport) -> str:
         "| Metric | Value |",
         "|---|---|",
         f"| Claims | {report.n_claims} |",
+        f"| Labeled hypotheses (excluded from rates) | "
+        f"{report.n_hypotheses} |",
         f"| Unsupported-claim rate | {report.unsupported_rate:.1%} |",
         f"| Contradiction rate | {report.contradiction_rate:.1%} |",
         f"| Citation coverage | {report.citation_coverage:.1%} |",
         f"| Temporal leakage count | {report.temporal_leakage_count} |",
+        f"| Narrative figures without a cited bullet | "
+        f"{report.narrative_gap_count} |",
         f"| Guardrail rejections | {report.guardrail_rejections} |",
         "",
         "By type: " + ", ".join(f"{k}={v}" for k, v in
@@ -70,4 +88,7 @@ def to_markdown(report: EvalReport) -> str:
     if report.temporal_problems:
         lines += ["", "## Temporal problems (MUST be zero)"]
         lines += [f"- {p}" for p in report.temporal_problems]
+    if report.narrative_gaps:
+        lines += ["", "## Narrative figures without a cited bullet"]
+        lines += [f"- {p}" for p in report.narrative_gaps]
     return "\n".join(lines) + "\n"
