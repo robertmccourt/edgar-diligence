@@ -2,8 +2,7 @@ import hashlib
 import duckdb
 from edgar.curate.periods import parse_period, parse_yyyymmdd
 
-FACT_DDL = """
-CREATE TABLE IF NOT EXISTS fact (
+_FACT_COLUMNS = """(
     fact_id VARCHAR PRIMARY KEY,
     cik BIGINT,
     canonical_field VARCHAR,
@@ -20,8 +19,9 @@ CREATE TABLE IF NOT EXISTS fact (
     mapping_rule_id VARCHAR,
     confidence DOUBLE,
     source_quarter VARCHAR
-);
-"""
+)"""
+
+FACT_DDL = "CREATE TABLE IF NOT EXISTS fact " + _FACT_COLUMNS + ";"
 
 
 def make_fact_id(adsh: str, tag: str, ddate: str, qtrs: str,
@@ -30,11 +30,13 @@ def make_fact_id(adsh: str, tag: str, ddate: str, qtrs: str,
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
-def create_fact_table(con: duckdb.DuckDBPyConnection) -> None:
-    con.execute(FACT_DDL)
+def create_fact_table(con: duckdb.DuckDBPyConnection,
+                      name: str = "fact") -> None:
+    con.execute(f"CREATE TABLE IF NOT EXISTS {name} {_FACT_COLUMNS};")
 
 
-def build_facts(con: duckdb.DuckDBPyConnection) -> int:
+def build_facts(con: duckdb.DuckDBPyConnection, table: str = "fact",
+                chunk_size: int = 100_000) -> int:
     """Project mapped raw_num rows into the bitemporal fact table.
 
     Rows whose tag has no rule are skipped — they are the mapping tail,
@@ -145,11 +147,16 @@ def build_facts(con: duckdb.DuckDBPyConnection) -> int:
             rule_id, conf, src_q,
         ))
 
-    if payload:
+    # Chunked with a commit per chunk: one executemany of the full ~5M-row
+    # payload inside a single transaction exhausts DuckDB's memory pool
+    # (observed OOM at 12.7GiB on the 2026-08-21 real-store rebuild).
+    # Callers that need all-or-nothing semantics (rebuild_curated) point
+    # `table` at a staging table and swap it in atomically afterwards.
+    for i in range(0, len(payload), chunk_size):
         con.executemany(
-            "INSERT OR REPLACE INTO fact VALUES "
+            f"INSERT OR REPLACE INTO {table} VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            payload,
+            payload[i:i + chunk_size],
         )
 
     attempted = len(payload)

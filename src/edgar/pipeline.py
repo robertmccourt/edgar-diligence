@@ -55,13 +55,37 @@ def rebuild_curated(con) -> dict:
     For mapping-rule changes: full fact rebuild without re-downloading or
     re-loading 29 quarters of archives. Deletes fact rows first so facts
     from removed rules cannot linger (build_facts alone only ever adds).
+
+    Stage-then-swap, so the live table is never in a partial state. A
+    rebuild killed mid-insert used to leave an arbitrary committed prefix
+    of the facts that passed every rate-based quality check — this
+    happened twice on the real store (machine sleep, 2026-08), leaving
+    2.6M of ~4.7M rows and a memo agent that couldn't find Apple's annual
+    revenue. Inserts now go to fact_staging in per-chunk commits (a single
+    ~5M-row transaction OOMs DuckDB's pool — observed at 12.7GiB), and the
+    only mutation of `fact` is the transactional drop+rename at the end:
+    an interruption anywhere leaves the previous complete table in place.
     """
     create_mapping_table(con)
     seed_mapping_rules(con)
     create_fact_table(con)
-    con.execute("DELETE FROM fact")
-    n_facts = build_facts(con)
-    n_companies = build_company_table(con)
+    con.execute("DROP TABLE IF EXISTS fact_staging")
+    create_fact_table(con, "fact_staging")
+    n_facts = build_facts(con, table="fact_staging")
+    con.execute("BEGIN TRANSACTION")
+    try:
+        con.execute("DROP TABLE fact")
+        con.execute("ALTER TABLE fact_staging RENAME TO fact")
+        n_companies = build_company_table(con)
+        con.execute("COMMIT")
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    stored = con.execute("SELECT count(*) FROM fact").fetchone()[0]
+    if stored != n_facts:
+        raise RuntimeError(
+            f"rebuild_curated: build_facts reported {n_facts} facts but "
+            f"the table holds {stored} — partial or corrupted build")
     return {
         "companies": n_companies,
         "facts": n_facts,
