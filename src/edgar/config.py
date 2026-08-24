@@ -3,12 +3,17 @@ from functools import lru_cache
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_SECRET_KEYS = ("ANTHROPIC_API_KEY", "LANGFUSE_PUBLIC_KEY",
-                "LANGFUSE_SECRET_KEY", "LANGFUSE_HOST")
+_SECRET_KEYS = ("ANTHROPIC_API_KEY", "OPENROUTER_API_KEY",
+                "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY",
+                "LANGFUSE_HOST")
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="EDGAR_", env_file=".env")
+    # extra="ignore": .env also holds unprefixed secrets (API keys) read by
+    # load_secrets_env, which pydantic-settings would otherwise reject as
+    # extra inputs the moment one is uncommented.
+    model_config = SettingsConfigDict(env_prefix="EDGAR_", env_file=".env",
+                                      extra="ignore")
 
     data_dir: Path = Path("data")
     duckdb_path: Path = Path("data/edgar.duckdb")

@@ -40,6 +40,7 @@ def build_graph():
 
 
 def run_agent(*, cik: int, as_of: date, question: str | None = None,
+              sections: list[str] | None = None,
               config=None, llm=None, embedder=None, tracer=None,
               con=None, out_dir: Path = Path("data/memos")) -> Memo:
     from edgar.ops.tracing import make_tracer
@@ -54,15 +55,17 @@ def run_agent(*, cik: int, as_of: date, question: str | None = None,
     create_memory_tables(con)
     create_narrative_tables(con)
     if llm is None:
-        from edgar.agent.llm import AnthropicLLM
-        llm = AnthropicLLM(cfg.generation_model)
+        from edgar.agent.llm import make_llm
+        llm = make_llm(cfg.generation_model,
+                       patience_s=cfg.llm_patience_s)
     if embedder is None:
         from edgar.narrative.embedder import SentenceTransformerEmbedder
         embedder = SentenceTransformerEmbedder()
     tracer = tracer or make_tracer(f"memo-{cik}-{as_of}")
     row = con.execute("SELECT name FROM company WHERE cik = ?",
                       [cik]).fetchone()
-    state = dict(cik=cik, as_of=as_of, question=question, config=cfg,
+    state = dict(cik=cik, as_of=as_of, question=question,
+                 sections=sections, config=cfg,
                  con=con, llm=llm, embedder=embedder, tracer=tracer,
                  ledger=EvidenceLedger(), coverage=None, plan=[],
                  section_idx=0, memo=None, guardrail_report=None,

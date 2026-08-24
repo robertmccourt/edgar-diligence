@@ -232,3 +232,30 @@ def test_emit_writes_latency_s_when_t0_present(tmp_path):
     blob = json.loads((st["out_dir"] / f"{stem}.json").read_text())
     assert "latency_s" in blob
     assert blob["latency_s"] >= 0.0
+
+
+def test_plan_node_full_memo_by_default():
+    st = {"question": None}
+    nodes.plan_node(st)
+    assert len(st["plan"]) == 11
+
+
+def test_plan_node_section_subset():
+    """Scoped-down demonstration memos: run a named subset of sections
+    instead of the full 11-section build."""
+    st = {"question": None, "sections": ["business", "profitability"]}
+    nodes.plan_node(st)
+    assert st["plan"] == ["business", "profitability"]
+
+
+def test_plan_node_rejects_unknown_section():
+    import pytest
+    st = {"question": None, "sections": ["business", "nonsense"]}
+    with pytest.raises(ValueError, match="nonsense"):
+        nodes.plan_node(st)
+
+
+def test_plan_node_question_overrides_sections():
+    st = {"question": "What was revenue?", "sections": ["business"]}
+    nodes.plan_node(st)
+    assert st["plan"] == ["qa"]

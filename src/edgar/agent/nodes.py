@@ -40,8 +40,19 @@ def coverage_node(state: dict) -> dict:
 
 
 def plan_node(state: dict) -> dict:
-    state["plan"] = (["qa"] if state["question"]
-                     else [slug for _, slug, _ in SECTIONS])
+    """QA mode wins; else an explicit section subset (a scoped-down memo
+    that demonstrates the pipeline without an 11-section run); else all."""
+    slugs = [slug for _, slug, _ in SECTIONS]
+    if state["question"]:
+        state["plan"] = ["qa"]
+    elif state.get("sections"):
+        unknown = [s for s in state["sections"] if s not in slugs]
+        if unknown:
+            raise ValueError(f"unknown section slugs {unknown}; "
+                             f"valid: {slugs}")
+        state["plan"] = list(state["sections"])
+    else:
+        state["plan"] = slugs
     return state
 
 

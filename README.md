@@ -31,7 +31,30 @@ on top of it and measures how often that agent fabricates.
 
 ## Status
 
-Stage 1 (data foundation) in progress. See `docs/superpowers/`.
+Stage 1 (data foundation) and Stage 2 (cited agent + eval harness) built
+and merged. Real-model runs and judge calibration pending. See
+`docs/superpowers/`.
+
+## Running the agent
+
+Two provider configs, selected with `CONFIG=` (memos are stamped with the
+config version that produced them, so runs never get conflated):
+
+```sh
+# Paid: Anthropic (claude-opus-5 writes, claude-sonnet-5 judges).
+# Needs ANTHROPIC_API_KEY in .env.
+make memo CIK=320193 AS_OF=2024-03-01
+
+# Free: OpenRouter free-tier models. Needs OPENROUTER_API_KEY in .env
+# (keys are free at openrouter.ai/keys).
+make memo CIK=320193 AS_OF=2024-03-01 CONFIG=free
+make eval MEMO=data/memos/<stem>.json CONFIG=free
+```
+
+OpenRouter's free tier allows ~50 requests/day (1,000/day after a one-time
+$10 credit purchase) at up to 20 requests/minute. A full 11-section memo
+can exceed the 50/day cap; single questions
+(`python -m edgar.agent.run ... --question "..."`) use ~5-10 requests.
 
 ## Documentation
 

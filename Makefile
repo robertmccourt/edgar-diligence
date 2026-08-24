@@ -28,11 +28,13 @@ langfuse-up:
 	@echo "Langfuse at http://localhost:3000 — create an org/project, then put"
 	@echo "LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_HOST=http://localhost:3000 in .env"
 
+CONFIG ?= v1
+
 memo:
-	PYTHONPATH=src venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF)
+	PYTHONPATH=src venv/bin/python -m edgar.agent.run --cik $(CIK) --as-of $(AS_OF) --config $(CONFIG)
 
 eval:
-	PYTHONPATH=src venv/bin/python -m edgar.eval.run_eval $(MEMO)
+	PYTHONPATH=src venv/bin/python -m edgar.eval.run_eval $(MEMO) $(CONFIG)
 
 adversarial:
-	PYTHONPATH=src venv/bin/python -m edgar.eval.adversarial
+	PYTHONPATH=src venv/bin/python -m edgar.eval.adversarial $(CONFIG)

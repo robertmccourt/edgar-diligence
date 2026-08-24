@@ -1,0 +1,9 @@
+generation_model: z-ai/glm-5.2:free
+judge_model: nvidia/nemotron-3-super-120b-a12b:free   # cross-vendor: no self-grading
+retrieval_k: 8
+max_tool_turns: 6           # halved vs v1 to conserve free-tier requests
+max_repair_rounds: 2
+context_budget_chars: 60000
+compaction_threshold_chars: 45000
+recall_limit: 5
+llm_patience_s: 3600        # wait out free-pool saturation; never downgrade

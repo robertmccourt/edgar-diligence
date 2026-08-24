@@ -45,20 +45,22 @@ def score_answer(memo: Memo, report: EvalReport) -> str:
 
 def main() -> None:
     """Run all 30 cases through the agent's question mode and score
-    refusal vs fabrication. Needs ANTHROPIC_API_KEY; costs real money."""
+    refusal vs fabrication. Optional argv[1] picks the config version
+    (default v1). Needs the API key for that config's provider."""
     import json
+    import sys
     from datetime import date as _date
     from edgar.agent.graph import run_agent
     from edgar.config import get_settings, load_secrets_env
     from edgar.db import connect
     from edgar.agent.agent_config import load_agent_config
-    from edgar.agent.llm import AnthropicLLM
+    from edgar.agent.llm import make_llm
     from edgar.eval.run_eval import evaluate_memo
 
     load_secrets_env()
-    cfg = load_agent_config("v1")
+    cfg = load_agent_config(sys.argv[1] if len(sys.argv) > 1 else "v1")
     con = connect(get_settings().duckdb_path)
-    judge = AnthropicLLM(cfg.judge_model)
+    judge = make_llm(cfg.judge_model, patience_s=cfg.llm_patience_s)
     results = []
     for case in load_cases():
         as_of = _date(2023, 12, 31)

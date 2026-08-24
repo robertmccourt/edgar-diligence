@@ -16,6 +16,11 @@ class AgentConfig(BaseModel):
     context_budget_chars: int
     compaction_threshold_chars: int
     recall_limit: int
+    # Seconds an OpenRouter call waits out free-pool saturation before
+    # failing. Policy: wait for the pinned high-quality model, don't
+    # downgrade. Default matches the pre-existing quick-fail behavior;
+    # free configs set this high and run as monitored long jobs.
+    llm_patience_s: int = 35
     prompts_sha: str
     config_version: str
 
