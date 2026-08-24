@@ -15,6 +15,7 @@ class RawClaim(BaseModel):
     # scoring compares directly instead of trying every unit scale.
     claimed_values: list[float] = []
     is_hypothesis: bool = False
+    is_status_report: bool = False
     section: str = ""
 
     @field_validator("claim_type")

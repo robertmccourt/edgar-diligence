@@ -22,6 +22,12 @@ _CITE = re.compile(r"\[([A-Za-z0-9][A-Za-z0-9\-]*)\]")
 _HYP_PREFIX = re.compile(r"^\*\*Hypothesis:\*\*\s*")
 _HYP_HEADING = "value-creation hypotheses"
 
+# §4.6 missing-value taxonomy. A bullet reporting one of these is the memo
+# obeying the spec's "report absence, never drop it" rule, not an uncited
+# assertion — the same reasoning that excludes labeled hypotheses (§8.2).
+_STATUS_CODE = re.compile(
+    r"\b(NOT_DISCLOSED|NOT_APPLICABLE|NOT_YET_FILED|UNMAPPED|AMBIGUOUS)\b")
+
 _NUM = r"(-?\d[\d,]*(?:\.\d+)?)"
 _MAG = {"trillion": 1e12, "billion": 1e9, "bn": 1e9, "million": 1e6,
         "mn": 1e6, "thousand": 1e3}
@@ -113,15 +119,19 @@ def _bullets(markdown: str):
             yield section, bullet.group(1), in_hypotheses
 
 
-def extract_claims(markdown: str,
-                   id_kind: Callable[[str], str]) -> list[RawClaim]:
+def extract_claims(markdown: str, id_kind: Callable[[str], str], *,
+                   keep_status_reports: bool = False) -> list[RawClaim]:
     claims: list[RawClaim] = []
     for section, body, is_hyp in _bullets(markdown):
         citations = _CITE.findall(body)
         text = _HYP_PREFIX.sub("", _CITE.sub("", body)).strip()
         text = re.sub(r"\s{2,}", " ", text)
         values = parse_values(text)
+        is_status = bool(_STATUS_CODE.search(text)) and not citations
+        if is_status and not keep_status_reports:
+            continue
         claims.append(RawClaim(
+            is_status_report=is_status,
             claim_text=text,
             claim_type=_classify(citations, values, id_kind, is_hyp),
             citations=citations,

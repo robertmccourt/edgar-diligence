@@ -124,3 +124,27 @@ def test_narrative_number_absent_from_bullets_is_flagged():
     gaps = narrative_gaps(MEMO, _kind)
     assert len(gaps) == 1
     assert "28.4%" in gaps[0] and "Profitability" in gaps[0]
+
+
+STATUS_MEMO = """# Diligence memo: ACME (CIK 1)
+## Working capital
+- Inventory: status NOT_DISCLOSED in the coverage map.
+- Accounts payable is UNMAPPED in this dataset.
+- Revenue was $5.0 billion. [fa01]
+"""
+
+
+def test_status_code_lines_are_not_unsupported_claims():
+    """Spec §4.6 requires absence to be reported, not silently dropped, so
+    a status-code line is the memo obeying the spec — the same reasoning
+    that excludes labeled hypotheses (§8.2). The retired LLM decomposer
+    was instructed to skip these lines; the parser must too, or the
+    adversarial sweep scores honest refusals as fabrications."""
+    claims = extract_claims(STATUS_MEMO, _kind)
+    assert [c.claim_text for c in claims] == ["Revenue was $5.0 billion."]
+    assert all(not c.is_status_report for c in claims)
+
+
+def test_status_code_lines_are_still_recoverable():
+    reports = extract_claims(STATUS_MEMO, _kind, keep_status_reports=True)
+    assert sum(c.is_status_report for c in reports) == 2
