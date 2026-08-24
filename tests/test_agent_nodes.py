@@ -259,3 +259,25 @@ def test_plan_node_question_overrides_sections():
     st = {"question": "What was revenue?", "sections": ["business"]}
     nodes.plan_node(st)
     assert st["plan"] == ["qa"]
+
+
+def test_write_memo_subset_lists_only_planned_sections(tmp_path):
+    """Bug found by the first paid DeepSeek demo (2026-08-23): a 3-section
+    run produced an empty memo because write_memo asked for all 11
+    sections while the ledger held evidence for 3 — the writer emitted 11
+    empty shells. The section list must come from the plan."""
+    con = _con(tmp_path)
+    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                sections=[])
+    llm = FakeLLM(parsed=[memo])
+    st = _state(con, llm=llm)
+    st["session_id"] = "S-test"
+    st["plan"] = ["business", "profitability", "leverage"]
+
+    nodes.write_memo(st)
+
+    prompt = llm.parse_calls[0]["prompt"]
+    assert "profitability" in prompt
+    assert "1. business" in prompt
+    assert "working_capital" not in prompt
+    assert "peers" not in prompt

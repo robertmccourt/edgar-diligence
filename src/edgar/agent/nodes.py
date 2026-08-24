@@ -134,8 +134,13 @@ def write_memo(state: dict) -> dict:
     if state["question"]:
         section_list = "1. qa: Question and answer"
     else:
-        section_list = "\n".join(f"{n}. {slug}: {title}"
-                                 for n, slug, title in SECTIONS)
+        # From the plan, not SECTIONS: a subset run that asks the writer
+        # for all 11 sections against a 3-section ledger yields 11 empty
+        # shells (observed on the first paid DeepSeek demo, 2026-08-23).
+        titles = {slug: title for _, slug, title in SECTIONS}
+        section_list = "\n".join(
+            f"{n}. {slug}: {titles[slug]}"
+            for n, slug in enumerate(state["plan"], 1))
     ledger_text = _truncate_ledger(state["ledger"].render(),
                                    cfg.context_budget_chars)
     prompt = (

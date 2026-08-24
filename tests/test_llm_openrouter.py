@@ -269,3 +269,15 @@ def test_upstream_404_is_transient_not_withdrawal():
         {"role": "user", "content": "q"}], tools=TOOLS)
     assert turn.text == "recovered"
     assert len(sent) == 2
+
+
+def test_parse_structured_empty_content_names_finish_reason():
+    """kimi-k2.5 (2026-08-23): reasoning models can burn the whole
+    max_tokens budget thinking and return empty content — the error must
+    say so instead of a bare 'no JSON object'."""
+    body = {"choices": [{"message": {"role": "assistant", "content": ""},
+                         "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+    llm, _ = _client([(200, body)])
+    with pytest.raises(LLMError, match="length"):
+        llm.parse_structured(system="s", prompt="p", output_model=Out)

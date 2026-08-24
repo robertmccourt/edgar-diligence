@@ -61,6 +61,26 @@ def _first_of(con, claim: RawClaim, table: str, col: str, cols: str):
     return None, None
 
 
+def _judge_derived(con, claim: RawClaim, tolerance: float) -> Verdict:
+    cid = next((c for c in claim.citations if c.startswith("D-")), None)
+    if cid is None:
+        return Verdict(claim=claim, status="UNSUPPORTED",
+                       reason="derived claim cites no derivation_id")
+    try:
+        comp = recompute(con, cid)
+    except ComputeError as exc:
+        return Verdict(claim=claim, status="CONTRADICTED",
+                       reason=f"derivation fails to recompute: {exc}")
+    ok = _match(claim.claimed_value, comp.value, tolerance) or \
+        _match(claim.claimed_value, comp.value * 100, tolerance) or \
+        _match(claim.claimed_value, comp.value * 10_000, tolerance)
+    # x100 / x10000: percent and bps phrasings of the same ratio
+    return Verdict(claim=claim,
+                   status="SUPPORTED" if ok else "CONTRADICTED",
+                   reason=f"derivation {cid} = {comp.value:g} vs "
+                          f"claimed {claim.claimed_value}")
+
+
 def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
                 tolerance: float = 0.02) -> Verdict:
     t = claim.claim_type
@@ -71,6 +91,13 @@ def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
         cid, row = _first_of(con, claim, "fact", "fact_id",
                              "value, period_type, period_start, period_end")
         if row is None:
+            if any(c.startswith("D-") for c in claim.citations):
+                # Decomposer type labels are fuzzy model output; the id
+                # prefix is deterministic. A margin/ratio claim typed
+                # NUMERIC but citing a derivation is judged as DERIVED
+                # (first real eval scored five correct margin claims
+                # UNSUPPORTED by looking D- ids up in the fact table).
+                return _judge_derived(con, claim, tolerance)
             return Verdict(claim=claim, status="UNSUPPORTED",
                            reason=f"citations {claim.citations} resolve "
                                   "to no fact")
@@ -86,23 +113,7 @@ def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
                        reason=f"fact {cid} value {row[0]:g} vs claimed "
                               f"{claim.claimed_value}")
     if t == "DERIVED":
-        cid = next((c for c in claim.citations if c.startswith("D-")), None)
-        if cid is None:
-            return Verdict(claim=claim, status="UNSUPPORTED",
-                           reason="derived claim cites no derivation_id")
-        try:
-            comp = recompute(con, cid)
-        except ComputeError as exc:
-            return Verdict(claim=claim, status="CONTRADICTED",
-                           reason=f"derivation fails to recompute: {exc}")
-        ok = _match(claim.claimed_value, comp.value, tolerance) or \
-            _match(claim.claimed_value, comp.value * 100, tolerance) or \
-            _match(claim.claimed_value, comp.value * 10_000, tolerance)
-        # x100 / x10000: percent and bps phrasings of the same ratio
-        return Verdict(claim=claim,
-                       status="SUPPORTED" if ok else "CONTRADICTED",
-                       reason=f"derivation {cid} = {comp.value:g} vs "
-                              f"claimed {claim.claimed_value}")
+        return _judge_derived(con, claim, tolerance)
     if t == "ATTRIBUTED":
         cid, row = _first_of(con, claim, "span", "span_id", "text")
         if row is None:

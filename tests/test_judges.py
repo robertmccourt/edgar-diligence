@@ -184,3 +184,21 @@ def test_temporal_leakage_excludes_derivation_integrity_failures(tmp_path):
                        claimed_value=0.40)]
     problems = temporal_leakage(con, claims, as_of=date(2023, 6, 1))
     assert problems == []
+
+
+def test_numeric_claim_citing_derivation_judged_as_derived(tmp_path):
+    """First real eval (2026-08-23): the decomposer typed margin claims
+    NUMERIC, so their D- citations were looked up in the fact table and
+    five correct claims scored UNSUPPORTED. Decomposer type labels are
+    fuzzy model output; the citation's id prefix is deterministic — a
+    claim citing a derivation is judged down the derivation path."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="gp", field="gross_profit", value=45.9)
+    _fact(con, fact_id="rev", field="revenue", value=100.0)
+    d = compute(con, "gp / rev", {"gp": "gp", "rev": "rev"},
+                date(2023, 6, 1))
+    c = RawClaim(claim_text="Gross margin was 45.9%.",
+                 claim_type="NUMERIC", citations=[d.derivation_id],
+                 claimed_value=45.9)
+    v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
+    assert v.status == "SUPPORTED"

@@ -245,7 +245,15 @@ class OpenRouterLLM:
                 raise
             body.pop("response_format", None)
             data = self._post(body)
-        text = data["choices"][0]["message"].get("content") or ""
+        choice = data["choices"][0]
+        text = choice["message"].get("content") or ""
+        if not text.strip():
+            # Observed with kimi-k2.5: reasoning models can spend the whole
+            # max_tokens budget thinking and emit no content at all.
+            raise LLMError(
+                "structured response has empty content (finish_reason="
+                f"{choice.get('finish_reason')!r}; a reasoning model may "
+                "have spent max_tokens thinking)")
         try:
             return output_model.model_validate_json(_extract_json(text))
         except ValidationError as exc:

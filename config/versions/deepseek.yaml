@@ -1,0 +1,14 @@
+generation_model: deepseek/deepseek-v4-pro
+judge_model: anthropic/claude-haiku-4.5   # cross-vendor: no self-grading
+# Judge-seat history: qwen3.7-plus decomposed 56 claims but dropped every
+# [citation] despite the verbatim-copy instruction; kimi-k2.5 spent its
+# whole token budget reasoning and returned empty content. The judge is
+# the most instruction-following-sensitive seat in the system — it gets
+# a frontier model (~$0.15/eval via the same OpenRouter credits).
+retrieval_k: 8
+max_tool_turns: 12          # v1 parity: apples-to-apples with other configs
+max_repair_rounds: 2
+context_budget_chars: 60000
+compaction_threshold_chars: 45000
+recall_limit: 5
+llm_patience_s: 600         # paid capacity is reliable; patience covers blips
