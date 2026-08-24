@@ -281,3 +281,24 @@ def test_write_memo_subset_lists_only_planned_sections(tmp_path):
     assert "1. business" in prompt
     assert "working_capital" not in prompt
     assert "peers" not in prompt
+
+
+def test_emit_run_label_keeps_sibling_runs_from_colliding(tmp_path):
+    """The 30-case adversarial sweep writes one memo per case, but the
+    stem was (cik, as_of, config_version) only — so two cases about the
+    same company on the same date overwrote each other, destroying the
+    evidence needed to audit a FABRICATED verdict (2026-08-24)."""
+    con = _con(tmp_path)
+    memo = Memo(cik=1, company_name="ACME", as_of=date(2023, 6, 1),
+                sections=[], config_version="v1+abcd1234")
+    st = _state(con, question="q")
+    st["memo"] = memo
+    st["session_id"] = "S-test"
+    st["out_dir"] = tmp_path / "memos"
+    st["run_label"] = "adv-07"
+
+    nodes.emit(st)
+
+    written = sorted(p.name for p in (tmp_path / "memos").iterdir())
+    assert written == ["1_2023-06-01_v1+abcd1234_adv-07.json",
+                       "1_2023-06-01_v1+abcd1234_adv-07.md"]

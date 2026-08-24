@@ -180,7 +180,14 @@ def emit(state: dict) -> dict:
     memo, con = state["memo"], state["con"]
     out_dir = Path(state.get("out_dir", "data/memos"))
     out_dir.mkdir(parents=True, exist_ok=True)
+    # run_label disambiguates sibling runs that share (cik, as_of, config)
+    # — the adversarial sweep asks several questions of one company on one
+    # date, and without it each case overwrote the last, leaving no
+    # evidence behind a FABRICATED verdict.
+    label = state.get("run_label")
     stem = f"{memo.cik}_{memo.as_of}_{memo.config_version}"
+    if label:
+        stem += f"_{label}"
     (out_dir / f"{stem}.md").write_text(render_markdown(memo))
     blob = {
         "memo": memo.model_dump(mode="json"),

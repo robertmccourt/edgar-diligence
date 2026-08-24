@@ -27,6 +27,11 @@ _HYP_HEADING = "value-creation hypotheses"
 # assertion — the same reasoning that excludes labeled hypotheses (§8.2).
 _STATUS_CODE = re.compile(
     r"\b(NOT_DISCLOSED|NOT_APPLICABLE|NOT_YET_FILED|UNMAPPED|AMBIGUOUS)\b")
+# §7.3 downgrade marker. The guardrail already caught this assertion and
+# labeled it in the output; §8.2 counts that as guardrail_rejections.
+# Scoring it again as an uncited claim double-penalises a memo for
+# flagging its own uncertainty.
+_DOWNGRADED = re.compile(r"^\[UNVERIFIED[^\]]*\]\s*")
 
 _NUM = r"(-?\d[\d,]*(?:\.\d+)?)"
 _MAG = {"trillion": 1e12, "billion": 1e9, "bn": 1e9, "million": 1e6,
@@ -138,11 +143,14 @@ def extract_claims(markdown: str, id_kind: Callable[[str], str], *,
         text = _HYP_PREFIX.sub("", _CITE.sub("", body)).strip()
         text = re.sub(r"\s{2,}", " ", text)
         values = parse_values(text)
+        is_downgraded = bool(_DOWNGRADED.match(text))
+        text = _DOWNGRADED.sub("", text)
         is_status = bool(_STATUS_CODE.search(text)) and not citations
-        if is_status and not keep_status_reports:
+        if (is_status or is_downgraded) and not keep_status_reports:
             continue
         claims.append(RawClaim(
             is_status_report=is_status,
+            is_downgraded=is_downgraded,
             claim_text=text,
             claim_type=_classify(citations, values, id_kind, is_hyp),
             citations=citations,

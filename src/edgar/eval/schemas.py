@@ -16,6 +16,7 @@ class RawClaim(BaseModel):
     claimed_values: list[float] = []
     is_hypothesis: bool = False
     is_status_report: bool = False
+    is_downgraded: bool = False
     section: str = ""
 
     @field_validator("claim_type")

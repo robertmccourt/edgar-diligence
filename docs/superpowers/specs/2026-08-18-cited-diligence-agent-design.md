@@ -669,11 +669,16 @@ of a decomposer that returns a different claim set each run.
 
 ### 8.2 Metrics
 
-- Unsupported-claim rate, overall and by type. **Labeled hypotheses are
-  excluded from the denominator** (rev 3c): §7.7 requires speculation to be
-  stated under the hypotheses heading without citations, so counting those
-  as unsupported claims penalizes the memo for obeying the spec. They are
-  reported separately as a hypothesis count.
+- Unsupported-claim rate, overall and by type. **Text the memo has already
+  labeled as not-established is excluded from the denominator** (rev 3c) and
+  counted separately. Three kinds qualify, all for the same reason — each is
+  the memo obeying a rule this spec imposes, and scoring it as an uncited
+  assertion penalizes compliance:
+  - labeled hypotheses (§7.7 requires them stated without citations);
+  - status-code lines (§4.6 requires absence to be reported, never dropped);
+  - guardrail-downgraded claims (§7.3 marks them `[UNVERIFIED …]` in the
+    output, and §8.2 already counts that behavior as guardrail_rejections —
+    counting it twice double-penalizes the memo).
 - **Unit-scale tolerance is bounded** (rev 3c): a claimed value may be
   rescaled by 10³/10⁶/10⁹ (billions vs. units) or ×100/×10⁴ (percent, bps)
   only when the claim's own wording carries that unit. Blind trial of every
@@ -953,7 +958,23 @@ per-section narrative check only.
 One genuine finding survived the audit and is *not* a scorer bug: a
 figure (prior-year net margin, 25.6%) appeared in a narrative paragraph
 with no cited bullet behind it. §8.0's per-section narrative check exists
-to catch that class.
+to catch that class. It has since caught a second, sharper instance — a
+full-memo narrative claiming Q4 FY2023 capex of 2.42% where its own cited
+bullet says 2.56%, and an asset-turnover range starting at 0.25 that no
+bullet supports. Every bulleted claim in that memo verified; the prose
+around them drifted. Claim-level and narrative-level groundedness are
+distinct properties and only the first was previously measured.
+
+**First adversarial sweep, and a third exclusion.** The 30-case sweep
+(2026-08-24) scored 24 refusals, 3 grounded answers, and 3 fabrications.
+All three "fabrications" were re-run and audited: each memo had refused
+correctly — one stating that Microsoft does not report standalone Azure
+revenue, one that the FY2023 10-K was not yet filed as of the cutoff while
+supplying the quarterly figures that *were* visible — and each was scored
+FABRICATED solely because it carried a guardrail-downgraded
+`[UNVERIFIED …]` line. Hence the third exclusion above. The sweep is the
+metric the §1 thesis turns on, so it is re-run after any change to what
+counts as a claim.
 
 ### rev 3b — 2026-08-20 · as-built divergences recorded
 

@@ -175,3 +175,24 @@ def test_unit_carrying_numbers_are_not_double_counted():
     assert parse_values("margin was 45.9%") == pytest.approx([0.459])
     assert parse_values("cash of $40.76 billion and margin of 45.9%") == \
         pytest.approx([40.76e9, 0.459])
+
+
+DOWNGRADED_MEMO = """# Diligence memo: ACME (CIK 1)
+## Question and answer
+- Revenue was $5.0 billion. [fa01]
+- [UNVERIFIED — downgraded by guardrail] FY2023 revenue is NOT_YET_FILED as of this date.
+"""
+
+
+def test_guardrail_downgraded_claims_excluded_from_rates():
+    """Adversarial sweep (2026-08-24) scored three honest refusals as
+    FABRICATED. Each memo carried a line the guardrail had already
+    downgraded and labeled UNVERIFIED — the system working — which the
+    scorer then counted as an uncited claim. Spec §8.2 measures that
+    behaviour once already, as guardrail_rejections; counting it again in
+    the memo's claim rates double-penalises a memo for flagging its own
+    uncertainty, exactly as with hypotheses and status codes."""
+    claims = extract_claims(DOWNGRADED_MEMO, _kind)
+    assert [c.claim_text for c in claims] == ["Revenue was $5.0 billion."]
+    kept = extract_claims(DOWNGRADED_MEMO, _kind, keep_status_reports=True)
+    assert sum(c.is_downgraded for c in kept) == 1

@@ -68,9 +68,9 @@ def main() -> None:
             frag = case.question.split("As of ", 1)[1][:10]
             as_of = _date.fromisoformat(frag)
         memo = run_agent(cik=case.cik, as_of=as_of, question=case.question,
-                         config=cfg)
+                         config=cfg, run_label=case.id)
         memo_json = Path("data/memos") / \
-            f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
+            f"{memo.cik}_{memo.as_of}_{memo.config_version}_{case.id}.json"
         report = evaluate_memo(con, judge, memo_json)
         verdict = score_answer(memo, report)
         results.append({"id": case.id, "trap": case.trap,

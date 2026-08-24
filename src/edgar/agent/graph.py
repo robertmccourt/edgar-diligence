@@ -42,7 +42,8 @@ def build_graph():
 def run_agent(*, cik: int, as_of: date, question: str | None = None,
               sections: list[str] | None = None,
               config=None, llm=None, embedder=None, tracer=None,
-              con=None, out_dir: Path = Path("data/memos")) -> Memo:
+              con=None, out_dir: Path = Path("data/memos"),
+              run_label: str | None = None) -> Memo:
     from edgar.ops.tracing import make_tracer
     cfg = config or load_agent_config("v1")
     if con is None:
@@ -72,6 +73,7 @@ def run_agent(*, cik: int, as_of: date, question: str | None = None,
                  repair_round=0, conclusions=[], recalled_ids=[],
                  usage={"in": 0, "out": 0},
                  company_name=row[0] if row else f"CIK {cik}",
-                 out_dir=out_dir, t0=time.monotonic())
+                 out_dir=out_dir, run_label=run_label,
+                 t0=time.monotonic())
     final = build_graph().invoke(state)
     return final["memo"]
