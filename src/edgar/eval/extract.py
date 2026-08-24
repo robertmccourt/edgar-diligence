@@ -43,6 +43,12 @@ _MAGNITUDE = re.compile(_NUM +
 _PERCENT = re.compile(_NUM + r"\s*(?:%|percent\b)", re.I)
 _BPS = re.compile(_NUM + r"\s*(?:bps|basis points)\b", re.I)
 _MULTIPLE = re.compile(_NUM + r"\s*[x×]\b", re.I)
+# Ratios, multiples and day counts carry no unit marker but are genuine
+# claimed values (asset turnover 0.338, DIO 9.15 days, debt/equity 1.28).
+# A decimal point separates them from the bare integers that are almost
+# always dates or section numbers — the discriminator that lets both
+# "0.338" and "December 31, 2023" be handled correctly.
+_DECIMAL = re.compile(r"-?\d[\d,]*\.\d+")
 
 
 def _f(raw: str) -> float:
@@ -68,6 +74,11 @@ def parse_values_verbose(text: str) -> list[tuple[float, str]]:
                 continue          # same number already captured
             scale = _MAG.get((m.group(2) or "").lower(), 1.0)
             found.append((m.start(), _f(m.group(1)) * scale, m.group(0)))
+    # Last: bare decimals, only where no unit-carrying match covers them.
+    for m in _DECIMAL.finditer(text):
+        if any(m.start() - 2 <= pos <= m.end() for pos, _, _ in found):
+            continue
+        found.append((m.start(), _f(m.group(0)), m.group(0)))
     seen: set[int] = set()
     out: list[tuple[float, str]] = []
     for pos, val, raw in sorted(found):

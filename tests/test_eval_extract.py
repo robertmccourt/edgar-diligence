@@ -148,3 +148,30 @@ def test_status_code_lines_are_not_unsupported_claims():
 def test_status_code_lines_are_still_recoverable():
     reports = extract_claims(STATUS_MEMO, _kind, keep_status_reports=True)
     assert sum(c.is_status_report for c in reports) == 2
+
+
+def test_unitless_quantities_are_values_dates_are_not():
+    """Full-memo run (2026-08-24): requiring an explicit unit marker threw
+    away every ratio, multiple, and day count — four correct claims scored
+    CONTRADICTED with 'claimed None'. A decimal point is the discriminator:
+    ratios and day counts carry one, dates and section numbers do not."""
+    assert parse_values("Revenue/total assets was 0.338") == \
+        pytest.approx([0.338])
+    assert parse_values("days inventory outstanding was 9.15 days") == \
+        pytest.approx([9.15])
+    assert parse_values("CCC was -51.14 days") == pytest.approx([-51.14])
+    assert parse_values("ratio was 1.28, down from 1.53") == \
+        pytest.approx([1.28, 1.53])
+
+
+def test_bare_integers_still_rejected():
+    assert parse_values("In Q1 FY2024, across 11 sections") == []
+    assert parse_values("the quarter ended December 31, 2023") == []
+
+
+def test_unit_carrying_numbers_are_not_double_counted():
+    assert parse_values("revenue was $119.6 billion") == \
+        pytest.approx([119.6e9])
+    assert parse_values("margin was 45.9%") == pytest.approx([0.459])
+    assert parse_values("cash of $40.76 billion and margin of 45.9%") == \
+        pytest.approx([40.76e9, 0.459])
