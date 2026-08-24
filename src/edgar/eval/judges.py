@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date
 
 from edgar.agent.llm import LLMClient
@@ -11,6 +12,35 @@ _JUDGE_SYSTEM = ("You judge whether evidence supports a claim. "
                  "Answer with status SUPPORTED, PARTIALLY_SUPPORTED, "
                  "UNSUPPORTED, or CONTRADICTED, and a one-sentence reason. "
                  "Be strict: the evidence must actually say it.")
+
+
+_QUARTER_LANG = re.compile(r"\bq[1-4]\b|\bquarter|\bthree[- ]months?", re.I)
+_ANNUAL_LANG = re.compile(
+    r"\bfiscal[- ](?:year|\d{4})|\bfull[- ]year|\bannual"
+    r"|\byear[- ]end(?:ed|ing)?\b|\bfy\s?'?\d{2,4}\b|\btwelve[- ]months?",
+    re.I)
+
+
+def _period_mismatch(text: str, period_type: str,
+                     start: date | None, end: date | None) -> str | None:
+    """Pilot-run finding (2026-08-21): a quarterly fact quoted as "fiscal
+    year" revenue passed the value check — the number was real and
+    correctly cited, only the period wording was wrong. Period language is
+    part of the claim. Instant facts are exempt: "cash at fiscal year end"
+    citing a balance-sheet snapshot is legitimate. Quarterly language is
+    checked first — "Q4 of fiscal 2023" claims a quarter."""
+    if period_type != "duration" or start is None or end is None:
+        return None
+    days = (end - start).days
+    if _QUARTER_LANG.search(text):
+        if days > 120:
+            return (f"claim says quarterly but cited fact spans {days} "
+                    f"days ({start}..{end})")
+        return None
+    if _ANNUAL_LANG.search(text) and days < 300:
+        return (f"claim says annual/fiscal-year but cited fact spans "
+                f"{days} days ({start}..{end})")
+    return None
 
 
 def _match(claimed: float | None, actual: float, tol: float) -> bool:
@@ -38,14 +68,21 @@ def judge_claim(con, llm: LLMClient, claim: RawClaim, as_of: date,
         return Verdict(claim=claim, status="UNSUPPORTED",
                        reason="no citation attached")
     if t == "NUMERIC":
-        cid, row = _first_of(con, claim, "fact", "fact_id", "value")
+        cid, row = _first_of(con, claim, "fact", "fact_id",
+                             "value, period_type, period_start, period_end")
         if row is None:
             return Verdict(claim=claim, status="UNSUPPORTED",
                            reason=f"citations {claim.citations} resolve "
                                   "to no fact")
-        ok = _match(claim.claimed_value, row[0], tolerance)
-        return Verdict(claim=claim,
-                       status="SUPPORTED" if ok else "CONTRADICTED",
+        if not _match(claim.claimed_value, row[0], tolerance):
+            return Verdict(claim=claim, status="CONTRADICTED",
+                           reason=f"fact {cid} value {row[0]:g} vs claimed "
+                                  f"{claim.claimed_value}")
+        mismatch = _period_mismatch(claim.claim_text, row[1], row[2], row[3])
+        if mismatch:
+            return Verdict(claim=claim, status="CONTRADICTED",
+                           reason=f"fact {cid}: {mismatch}")
+        return Verdict(claim=claim, status="SUPPORTED",
                        reason=f"fact {cid} value {row[0]:g} vs claimed "
                               f"{claim.claimed_value}")
     if t == "DERIVED":

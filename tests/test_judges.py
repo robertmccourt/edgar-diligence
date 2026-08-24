@@ -47,6 +47,60 @@ def test_numeric_contradicted_when_value_off(tmp_path):
                        as_of=date(2023, 6, 1)).status == "CONTRADICTED"
 
 
+def test_numeric_annual_language_on_quarterly_fact_contradicted(tmp_path):
+    """Pilot-run finding (2026-08-21): the first free-model memo quoted
+    Apple's Dec-2022 quarter ($117.15B) as "fiscal year" revenue. Value and
+    citation matched, so the judge said SUPPORTED. Period wording is part
+    of the claim: annual language citing a ~90-day fact must contradict."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="fQ", value=117_154_000_000.0)  # 89-day duration
+    c = RawClaim(claim_text="Revenue for the fiscal year ending 2023-03-31 "
+                            "was USD 117,154,000,000",
+                 claim_type="NUMERIC", citations=["fQ"],
+                 claimed_value=117_154_000_000.0)
+    v = judge_claim(con, FakeLLM(), c, as_of=date(2023, 6, 1))
+    assert v.status == "CONTRADICTED"
+    assert "89 days" in v.reason
+
+
+def test_numeric_annual_language_on_annual_fact_supported(tmp_path):
+    con = _con(tmp_path)
+    _fact(con, fact_id="fY", value=383_285_000_000.0,
+          pstart=date(2022, 10, 1), pend=date(2023, 9, 30),
+          filed=date(2023, 11, 3))
+    c = RawClaim(claim_text="Fiscal year 2023 revenue was $383.3 billion",
+                 claim_type="NUMERIC", citations=["fY"],
+                 claimed_value=383.3)
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 12, 1)).status == "SUPPORTED"
+
+
+def test_numeric_quarter_language_on_annual_fact_contradicted(tmp_path):
+    con = _con(tmp_path)
+    _fact(con, fact_id="fY", value=383_285_000_000.0,
+          pstart=date(2022, 10, 1), pend=date(2023, 9, 30),
+          filed=date(2023, 11, 3))
+    c = RawClaim(claim_text="Q4 revenue was $383.3 billion",
+                 claim_type="NUMERIC", citations=["fY"],
+                 claimed_value=383.3)
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 12, 1)).status == "CONTRADICTED"
+
+
+def test_numeric_period_check_skips_instant_facts(tmp_path):
+    """Balance-sheet snapshots have no duration; "cash at fiscal year end"
+    citing an instant fact is legitimate, not a period mislabel."""
+    con = _con(tmp_path)
+    _fact(con, fact_id="fI", field="cash_and_equivalents",
+          value=29_965_000_000.0, ptype="instant",
+          pstart=date(2023, 9, 30), pend=date(2023, 9, 30),
+          filed=date(2023, 11, 3))
+    c = RawClaim(claim_text="Cash at fiscal year end 2023 was $30.0B",
+                 claim_type="NUMERIC", citations=["fI"], claimed_value=30.0)
+    assert judge_claim(con, FakeLLM(), c,
+                       as_of=date(2023, 12, 1)).status == "SUPPORTED"
+
+
 def test_derived_recomputes_from_cited_derivation(tmp_path):
     con = _con(tmp_path)
     _fact(con, fact_id="gp", field="gross_profit", value=40.0)
