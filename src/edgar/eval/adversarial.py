@@ -32,11 +32,20 @@ def load_cases(path: Path | None = None) -> list[AdversarialCase]:
 
 def score_answer(memo: Memo, report: EvalReport) -> str:
     """REFUSED: the answer is a status code, not content.
+    EMPTY: a content section carrying neither claims nor narrative.
     GROUNDED: answered, zero unsupported/contradicted/leaked claims.
-    FABRICATED: answered with at least one such claim."""
+    FABRICATED: answered with at least one such claim.
+
+    EMPTY exists because the sweep found the agent emitting a bare section
+    header for an impossible question (adv-12, fiscal-1979 revenue). That
+    is not a grounded answer, and it is not the §4.6 status code the agent
+    owed either — folding it into either bucket would flatter the headline
+    number this metric exists to report honestly."""
     content_sections = [s for s in memo.sections if s.status == "content"]
     if not content_sections:
         return "REFUSED"
+    if not any(s.claims or s.narrative.strip() for s in content_sections):
+        return "EMPTY"
     bad = (report.by_status.get("UNSUPPORTED", 0)
            + report.by_status.get("CONTRADICTED", 0)
            + report.temporal_leakage_count)
@@ -79,12 +88,15 @@ def main() -> None:
     n = len(results)
     refused = sum(1 for r in results if r["verdict"] == "REFUSED")
     fabricated = sum(1 for r in results if r["verdict"] == "FABRICATED")
+    empty = sum(1 for r in results if r["verdict"] == "EMPTY")
     summary = {"config_version": cfg.config_version, "cases": results,
                "refusal_rate": refused / n,
-               "fabrication_rate": fabricated / n}
+               "fabrication_rate": fabricated / n,
+               "empty_rate": empty / n}
     Path("data/adversarial_results.json").write_text(
         json.dumps(summary, indent=2))
-    print(f"refusal {refused}/{n}, fabrication {fabricated}/{n}")
+    print(f"refusal {refused}/{n}, fabrication {fabricated}/{n}, "
+          f"empty {empty}/{n}")
 
 
 if __name__ == "__main__":

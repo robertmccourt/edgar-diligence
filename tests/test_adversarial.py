@@ -73,3 +73,19 @@ def test_memo_json_path_matches_what_emit_writes(tmp_path):
     memo_json = out_dir / f"{memo.cik}_{memo.as_of}_{memo.config_version}.json"
     assert memo_json.exists()
     assert memo_json == Path(out_dir) / "320193_2023-12-31_v1+deadbeef.json"
+
+
+def test_empty_content_section_is_not_grounded():
+    """First corrected sweep (2026-08-24): adv-12 ("What was Apple's
+    revenue in fiscal 1979?") emitted a section header and nothing else —
+    no claims, no narrative — and scored GROUNDED, because score_answer
+    only asked whether a content section existed. An empty non-answer is
+    not a grounded answer, and it is not the §4.6 status code the agent
+    should have emitted either. Counting it as either would flatter the
+    headline refusal-vs-fabrication number."""
+    empty = Memo(cik=1, company_name="ACME", as_of=date(2023, 12, 31),
+                 sections=[MemoSection(slug="qa", title="Q and A",
+                                       status="content", narrative="",
+                                       claims=[])])
+    clean = compute_metrics([], [], memo_meta=_META)
+    assert score_answer(empty, clean) == "EMPTY"
